@@ -12,10 +12,17 @@ import (
 	"gorm.io/gorm/schema"
 
 	"streetlight/internal/apperr"
+	"streetlight/internal/modules/auth"
 	"streetlight/internal/modules/fault"
 	"streetlight/internal/modules/lamp"
 	"streetlight/internal/modules/repair"
 )
+
+// adminContext 构造一个管理岗登录上下文, 供需要登录态的维修录入流程使用。
+func adminContext() context.Context {
+	return (&auth.Principal{ID: 1, Username: "admin", DisplayName: "测试管理员", Role: auth.RoleAdmin}).
+		WithContext(context.Background())
+}
 
 // harness 使用内存数据库装配真实模块, 用于验证跨模块业务流程。
 type harness struct {
@@ -89,7 +96,7 @@ func requireConflict(t *testing.T, err error) {
 }
 
 func TestFaultRepairLifecycle(t *testing.T) {
-	ctx := context.Background()
+	ctx := adminContext()
 	h := newHarness(t)
 	device := h.createLamp(t, "LD-T-001")
 
@@ -161,7 +168,7 @@ func TestFaultRepairLifecycle(t *testing.T) {
 }
 
 func TestRepairPendingPartsKeepsFaultProcessing(t *testing.T) {
-	ctx := context.Background()
+	ctx := adminContext()
 	h := newHarness(t)
 	device := h.createLamp(t, "LD-T-002")
 	entity := h.createFault(t, device.ID, "线路老化需要更换电缆")
@@ -195,7 +202,7 @@ func TestRepairPendingPartsKeepsFaultProcessing(t *testing.T) {
 }
 
 func TestRepairRejectedOnClosedFault(t *testing.T) {
-	ctx := context.Background()
+	ctx := adminContext()
 	h := newHarness(t)
 	device := h.createLamp(t, "LD-T-003")
 	entity := h.createFault(t, device.ID, "误报故障需要作废")
@@ -208,7 +215,7 @@ func TestRepairRejectedOnClosedFault(t *testing.T) {
 }
 
 func TestFaultValidation(t *testing.T) {
-	ctx := context.Background()
+	ctx := adminContext()
 	h := newHarness(t)
 	device := h.createLamp(t, "LD-T-004")
 

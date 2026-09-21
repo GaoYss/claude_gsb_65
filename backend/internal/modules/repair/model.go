@@ -38,12 +38,15 @@ func IsValidResult(result string) bool {
 
 // Repair 维修记录, 一条记录对应故障的一次维修过程。
 type Repair struct {
-	ID           uint       `gorm:"primaryKey" json:"id"`
-	RepairNo     string     `gorm:"size:64;uniqueIndex;not null" json:"repair_no"`
-	FaultID      uint       `gorm:"index;not null" json:"fault_id"`
-	FaultNo      string     `gorm:"size:64;index" json:"fault_no"`
-	LampID       uint       `gorm:"index" json:"lamp_id"`
-	LampCode     string     `gorm:"size:64;index" json:"lamp_code"`
+	ID       uint   `gorm:"primaryKey" json:"id"`
+	RepairNo string `gorm:"size:64;uniqueIndex;not null" json:"repair_no"`
+	FaultID  uint   `gorm:"index;not null" json:"fault_id"`
+	FaultNo  string `gorm:"size:64;index" json:"fault_no"`
+	LampID   uint   `gorm:"index" json:"lamp_id"`
+	LampCode string `gorm:"size:64;index" json:"lamp_code"`
+	// AssigneeID 是负责推进该记录的系统用户(system user)ID。
+	// 维修人员只能推进 assignee_id = 本人的记录; 0 表示历史数据未指派。
+	AssigneeID   uint       `gorm:"index" json:"assignee_id"`
 	Repairman    string     `gorm:"size:64;index;not null" json:"repairman"`
 	RepairTeam   string     `gorm:"size:64;index" json:"repair_team"`
 	ContactPhone string     `gorm:"size:32" json:"contact_phone"`

@@ -7,6 +7,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"streetlight/internal/modules/auth"
 	"streetlight/internal/modules/fault"
 	"streetlight/internal/modules/lamp"
 	"streetlight/internal/modules/repair"
@@ -50,6 +51,15 @@ func seed(db *gorm.DB) error {
 		return nil
 	}
 
+	// 演示维修记录统一指派给种子维修人员账号(repairman), 用其登录即可看到并推进这些记录。
+	repairmanID := uint(0)
+	repairmanName := "刘志强"
+	var seedRepairman auth.User
+	if err := db.Where("role = ? AND active = ?", auth.RoleRepair, true).Order("id ASC").First(&seedRepairman).Error; err == nil {
+		repairmanID = seedRepairman.ID
+		repairmanName = seedRepairman.DisplayName
+	}
+
 	now := time.Now()
 	lamps := buildSeedLamps(now)
 	if err := db.Create(&lamps).Error; err != nil {
@@ -65,7 +75,7 @@ func seed(db *gorm.DB) error {
 		prefix := "GD" + reportedAt.Format("20060102")
 		sequences[prefix]++
 
-		faults = append(faults, fault.Fault{
+		record := fault.Fault{
 			FaultNo:       fmt.Sprintf("%s%04d", prefix, sequences[prefix]),
 			LampID:        device.ID,
 			LampCode:      device.Code,
@@ -78,7 +88,14 @@ func seed(db *gorm.DB) error {
 			ReporterPhone: "13800001234",
 			ReportedAt:    reportedAt,
 			Status:        item.status,
-		})
+		}
+		// 已进入维修流程的故障指派给种子维修人员。
+		if repairmanID > 0 && item.status != fault.StatusPending {
+			assigneeID := repairmanID
+			record.AssigneeID = &assigneeID
+			record.AssigneeName = repairmanName
+		}
+		faults = append(faults, record)
 	}
 	if err := db.Create(&faults).Error; err != nil {
 		return fmt.Errorf("写入故障演示数据失败: %w", err)
@@ -101,6 +118,7 @@ func seed(db *gorm.DB) error {
 				FaultNo:      faults[index].FaultNo,
 				LampID:       device.ID,
 				LampCode:     device.Code,
+				AssigneeID:   repairmanID,
 				Repairman:    expect.repairman,
 				RepairTeam:   expect.team,
 				ContactPhone: "13900005678",

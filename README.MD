@@ -7,6 +7,7 @@
 | 后端 | Go 1.27 / Gin / GORM / sqlite(纯 Go 驱动) 或 PostgreSQL |
 | 前端 | Vue 3 / Vite / Element Plus / Pinia / Vue Router / Axios |
 | 部署 | Docker Compose, Nginx 托管静态资源并反向代理 `/api` |
+| 权限 | 三角色 RBAC(登记人员/维修人员/管理岗) + 只追加操作审计 |
 
 ---
 
@@ -227,6 +228,8 @@ go test ./...
 | `DB_DRIVER` | `sqlite` | `sqlite` 或 `postgres` |
 | `DB_DSN` | `data/streetlight.db` | sqlite 为文件路径, postgres 为连接串 |
 | `DB_LOG_LEVEL` | `warn` | GORM 日志级别 |
+| `AUTH_TOKEN_SECRET` | `streetlight-dev-secret-change-me` | 登录令牌 HMAC 签名密钥, 生产环境务必修改 |
+| `AUTH_TOKEN_TTL` | `12h` | 登录令牌有效期 |
 
 前端变量放在 `frontend/.env.development` / `.env.production`, 只有 `VITE_API_BASE_URL` 与 `VITE_DEV_PROXY_TARGET`。
 
@@ -236,7 +239,26 @@ go test ./...
 
 ## 七、API 一览
 
-基础路径 `/api/v1`, 下表省略前缀。
+基础路径 `/api/v1`, 下表省略前缀。除登录与权限目录外, 所有接口都需要登录令牌(`Authorization: Bearer <token>`), 并按权限点鉴权。
+
+### 认证与系统管理
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/auth/login` | 登录, 返回令牌、用户信息与权限点列表(公开) |
+| GET | `/auth/catalog` | 角色与权限点目录(公开) |
+| POST | `/auth/logout` | 登出 |
+| GET | `/auth/profile` | 当前用户与权限快照 |
+| PUT | `/auth/password` | 修改自身密码 |
+| GET/POST | `/users`、`PUT /users/:id`、`POST /users/:id/reset-password` | 用户与角色管理(仅管理岗 `user:manage`) |
+| GET | `/audit-logs` | 操作审计只读查询(仅管理岗 `audit:view`) |
+
+### 数据导出
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/export/faults` | 导出故障 CSV(需 `export:fault`, 数据范围与列表接口一致) |
+| GET | `/export/repairs` | 导出维修 CSV(需 `export:repair`, 维修人员仅导出本人记录) |
 
 ### 基础
 
@@ -267,8 +289,10 @@ go test ./...
 | GET | `/faults/meta` | 字典: 类型/等级/来源/状态 |
 | GET | `/faults/:id` | 详情 |
 | PUT | `/faults/:id` | 修改 |
-| DELETE | `/faults/:id` | 删除(仅已关闭且无维修记录) |
+| DELETE | `/faults/:id` | 删除(仅已关闭且无维修记录; 需 `fault:delete`) |
 | POST | `/faults/:id/close` | 关闭故障 |
+| POST | `/faults/:id/reassign` | 改派故障负责人(仅管理岗 `fault:reassign`) |
+| POST | `/faults/:id/exception` | 例外流转, 跳过状态机强制跳转(仅管理岗 `fault:exception`, 必填原因) |
 
 ### 维修记录录入
 
@@ -281,8 +305,9 @@ go test ./...
 | GET | `/repairs/fault/:faultId` | 某故障下的全部维修记录 |
 | GET | `/repairs/:id` | 详情 |
 | PUT | `/repairs/:id` | 修改 |
-| POST | `/repairs/:id/finish` | 完工(写入完工时间与维修结果) |
-| DELETE | `/repairs/:id` | 删除(会重算故障的维修次数) |
+| POST | `/repairs/:id/finish` | 完工(写入完工时间与维修结果; 仅负责人本人或管理岗) |
+| POST | `/repairs/:id/reassign` | 改派维修负责人(仅管理岗 `repair:reassign`) |
+| DELETE | `/repairs/:id` | 删除(仅管理岗 `repair:manage`, 会重算故障的维修次数) |
 
 ### 维修状态查询
 
@@ -307,7 +332,61 @@ go test ./...
 
 ---
 
-## 九、演示数据
+## 九、权限模型与操作审计
+
+系统采用三角色 RBAC。**权限判定只有一个事实源**: 后端 `internal/modules/auth/permission.go` 的「角色 → 权限点」映射与 `HasPermission()` 函数。页面显隐、路由守卫、接口中间件、数据导出、运行看板四处全部引用同一组权限点常量, 因此对同一操作必然给出同一结论。
+
+### 9.1 三类角色的操作范围
+
+| 角色 | 可做 | 不可做 |
+| --- | --- | --- |
+| **登记人员** `registrar` | 故障登记、各类查询、查看看板 | 维护路灯台账、修改/关闭/删除故障、推进维修、改派、例外流转、导出、查看审计 |
+| **维修人员** `repair` | 查询、查看看板、**只推进自己负责(`assignee_id = 本人`)的维修记录**(开工/编辑/完工) | 登记故障、操作他人负责的记录、删除、改派、例外流转、导出、查看审计 |
+| **管理岗** `admin` | 以上全部, 外加: 台账维护、故障改派、维修改派与派工、**例外流转**、数据导出、查看审计、用户与角色管理 | —— |
+
+- 维修记录新增 `assignee_id`(负责人)。维修人员的列表/推进被强制限定在本人负责的记录上; 操作他人记录时, 即使绕过前端直连接口, 也会在处理器的资源级归属校验处被拒(403), 并指明缺少 `repair:manage` 授权。
+- 维修记录列表按角色收窄数据范围: 维修人员只见本人记录, 登记人员只读全部, 管理岗可见全部。
+
+### 9.2 越权拒绝如何反馈
+
+任何越权访问都返回 `403 PERMISSION_DENIED`, 响应体明确指出**缺了哪一项授权**, 例如:
+
+```json
+{
+  "code": "PERMISSION_DENIED",
+  "message": "当前角色【维修人员】无权执行「登记故障」, 缺少授权: fault:register(登记故障)。...",
+  "details": { "required_permission": "fault:register" }
+}
+```
+
+未登录或令牌失效返回 `401 UNAUTHENTICATED`。前端对应: 无权限的菜单/按钮/页面入口不渲染; 直接输入无权限的路由地址会进入 403 页并展示缺失的授权点。前端隐藏只是体验优化, **真正的安全边界始终在后端**。
+
+### 9.3 只追加的操作审计
+
+- 所有**被拒绝**的操作(含未认证访问、登录失败)以及登录、登出、各类写操作、改派、例外流转、数据导出都会写入 `audit_log`。
+- 每条记录冗余操作者**当时的角色与权限快照**(`role_snapshot` / `perm_snapshot`)、动作、资源、请求方法/路径/IP/UA/请求 ID、判定结果与缺失的授权点。
+- 审计表**只追加**: 应用层没有任何更新/删除方法; 数据库层另建触发器, 直接 SQL 执行 `UPDATE`/`DELETE` 也会被中止。因此**调整某用户的角色或停用账号, 都不会隐藏或改写其历史操作记录**; 角色/启停变更对旧令牌立即生效(每次请求实时加载用户)。
+- 审计仅管理岗可在「操作审计」页只读查询, 支持按结果(允许/拒绝)、资源、动作、操作者筛选。
+
+### 9.4 内置演示账号
+
+首次启动且用户表为空时自动创建(密码见下, 可在「用户与权限」页修改):
+
+| 角色 | 用户名 | 密码 |
+| --- | --- | --- |
+| 登记人员 | `registrar` | `registrar123` |
+| 维修人员 | `repairman` | `repair123` |
+| 管理岗 | `admin` | `admin123` |
+
+认证使用 HMAC-SHA256 签名的无状态令牌(默认 12 小时), 可用 `AUTH_TOKEN_SECRET` / `AUTH_TOKEN_TTL` 配置。
+
+### 9.5 权限点清单(摘录)
+
+`lamp:view` / `lamp:manage`、`fault:view` / `fault:register` / `fault:update` / `fault:close` / `fault:delete` / `fault:reassign` / `fault:exception`、`repair:view` / `repair:claim` / `repair:advance` / `repair:manage` / `repair:assign` / `repair:reassign`、`status:view`、`export:fault` / `export:repair`、`audit:view`、`user:manage`。管理岗持有通配授权 `*`。
+
+---
+
+## 十、演示数据
 
 `APP_SEED=true`(默认)且库中还没有台账数据时, 首次启动会写入一组演示数据, 打开页面即可看到效果:
 

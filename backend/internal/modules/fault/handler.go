@@ -116,6 +116,46 @@ func (h *Handler) Delete(c *gin.Context) {
 	response.NoContent(c)
 }
 
+// Reassign 改派故障负责人(管理岗)。
+func (h *Handler) Reassign(c *gin.Context) {
+	id, err := httpx.ParseID(c, "id")
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	var req ReassignRequest
+	if err := httpx.BindJSON(c, &req); err != nil {
+		response.Fail(c, err)
+		return
+	}
+	entity, err := h.service.Reassign(c.Request.Context(), id, req)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.OK(c, entity)
+}
+
+// Exception 例外流转(管理岗)。
+func (h *Handler) Exception(c *gin.Context) {
+	id, err := httpx.ParseID(c, "id")
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	var req ExceptionRequest
+	if err := httpx.BindJSON(c, &req); err != nil {
+		response.Fail(c, err)
+		return
+	}
+	entity, err := h.service.ExceptionTransition(c.Request.Context(), id, req)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.OK(c, entity)
+}
+
 // Metadata 返回故障字典。
 func (h *Handler) Metadata(c *gin.Context) {
 	response.OK(c, h.service.Metadata())

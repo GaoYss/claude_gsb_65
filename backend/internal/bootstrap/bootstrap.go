@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"streetlight/internal/logging"
 	"streetlight/internal/middleware"
 	"streetlight/internal/module"
+	"streetlight/internal/modules/auth"
 	"streetlight/internal/response"
 )
 
@@ -37,13 +39,23 @@ func New(cfg *config.Config) (*App, error) {
 		return nil, fmt.Errorf("连接数据库失败: %w", err)
 	}
 
-	modules := buildModules(db)
+	modules, authModule := buildModules(db, cfg.Auth)
 	models := make([]any, 0)
 	for _, item := range modules {
 		models = append(models, item.Models()...)
 	}
 	if err := database.AutoMigrate(db, models); err != nil {
 		return nil, err
+	}
+
+	// 在存储层为审计表加装只追加保护(触发器拒绝 UPDATE/DELETE)。
+	if err := auth.InstallAuditGuard(db); err != nil {
+		return nil, err
+	}
+
+	// 初始化三个角色的内置演示账号(已存在则跳过)。
+	if err := authModule.Service().EnsureSeedUsers(context.Background()); err != nil {
+		return nil, fmt.Errorf("初始化内置账号失败: %w", err)
 	}
 
 	if cfg.App.Seed {

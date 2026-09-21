@@ -30,6 +30,17 @@ type CloseRequest struct {
 	Remark string `json:"remark" binding:"max=255"`
 }
 
+// ReassignRequest 改派故障负责人请求(仅管理岗)。
+type ReassignRequest struct {
+	AssigneeID uint `json:"assignee_id" binding:"required"`
+}
+
+// ExceptionRequest 例外流转请求(仅管理岗): 跳过常规状态机强制跳转。
+type ExceptionRequest struct {
+	ToStatus string `json:"to_status" binding:"required,oneof=pending processing repaired closed"`
+	Reason   string `json:"reason" binding:"required,max=255"`
+}
+
 // ListQuery 故障列表查询条件。
 type ListQuery struct {
 	pagination.Params

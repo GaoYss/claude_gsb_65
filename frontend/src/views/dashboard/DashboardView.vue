@@ -2,7 +2,7 @@
   <div v-loading="loading" class="page">
     <PageHeader title="运行看板" description="路灯台账、故障登记与维修进展的整体概览">
       <el-button :icon="Refresh" @click="load">刷新</el-button>
-      <el-button type="primary" :icon="Plus" @click="$router.push('/faults')">去登记故障</el-button>
+      <el-button v-permission="PERM.FAULT_REGISTER" type="primary" :icon="Plus" @click="$router.push('/faults')">去登记故障</el-button>
     </PageHeader>
 
     <div class="card-grid">
@@ -135,6 +135,7 @@ import StatCard from '@/components/common/StatCard.vue'
 import BarList from '@/components/common/BarList.vue'
 import StatusTag from '@/components/common/StatusTag.vue'
 import { statusApi } from '@/api/status'
+import { PERMISSIONS as PERM } from '@/constants/permission'
 import { FAULT_LEVEL, FAULT_STATUS, RUN_STATUS } from '@/constants/dict'
 import { formatWaiting } from '@/utils/format'
 

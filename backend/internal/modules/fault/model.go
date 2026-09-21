@@ -84,19 +84,22 @@ func canTransitTo(from, to string) bool {
 
 // Fault 故障登记记录, 串联路灯台账与维修记录。
 type Fault struct {
-	ID             uint       `gorm:"primaryKey" json:"id"`
-	FaultNo        string     `gorm:"size:64;uniqueIndex;not null" json:"fault_no"`
-	LampID         uint       `gorm:"index;not null" json:"lamp_id"`
-	LampCode       string     `gorm:"size:64;index" json:"lamp_code"`
-	RoadName       string     `gorm:"size:128;index" json:"road_name"`
-	FaultType      string     `gorm:"size:32;index;not null" json:"fault_type"`
-	FaultLevel     string     `gorm:"size:32;index;not null;default:normal" json:"fault_level"`
-	Source         string     `gorm:"size:32;index" json:"source"`
-	Description    string     `gorm:"size:512" json:"description"`
-	Reporter       string     `gorm:"size:64" json:"reporter"`
-	ReporterPhone  string     `gorm:"size:32" json:"reporter_phone"`
-	ReportedAt     time.Time  `gorm:"index;not null" json:"reported_at"`
-	Status         string     `gorm:"size:32;index;not null;default:pending" json:"status"`
+	ID            uint      `gorm:"primaryKey" json:"id"`
+	FaultNo       string    `gorm:"size:64;uniqueIndex;not null" json:"fault_no"`
+	LampID        uint      `gorm:"index;not null" json:"lamp_id"`
+	LampCode      string    `gorm:"size:64;index" json:"lamp_code"`
+	RoadName      string    `gorm:"size:128;index" json:"road_name"`
+	FaultType     string    `gorm:"size:32;index;not null" json:"fault_type"`
+	FaultLevel    string    `gorm:"size:32;index;not null;default:normal" json:"fault_level"`
+	Source        string    `gorm:"size:32;index" json:"source"`
+	Description   string    `gorm:"size:512" json:"description"`
+	Reporter      string    `gorm:"size:64" json:"reporter"`
+	ReporterPhone string    `gorm:"size:32" json:"reporter_phone"`
+	ReportedAt    time.Time `gorm:"index;not null" json:"reported_at"`
+	Status        string    `gorm:"size:32;index;not null;default:pending" json:"status"`
+	// AssigneeID 指派负责该故障的维修人员(系统用户), 由管理岗改派; 0 为未指派。
+	AssigneeID     *uint      `gorm:"index" json:"assignee_id"`
+	AssigneeName   string     `gorm:"size:64" json:"assignee_name"`
 	RepairCount    int        `gorm:"not null;default:0" json:"repair_count"`
 	LatestRepairID *uint      `json:"latest_repair_id"`
 	ClosedAt       *time.Time `json:"closed_at"`

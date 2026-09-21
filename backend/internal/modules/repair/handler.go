@@ -4,17 +4,19 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"streetlight/internal/httpx"
+	"streetlight/internal/modules/auth"
 	"streetlight/internal/response"
 )
 
 // Handler 处理维修记录相关的 HTTP 请求。
 type Handler struct {
 	service *Service
+	guard   *auth.Guard
 }
 
 // NewHandler 构造维修记录处理器。
-func NewHandler(service *Service) *Handler {
-	return &Handler{service: service}
+func NewHandler(service *Service, guard *auth.Guard) *Handler {
+	return &Handler{service: service, guard: guard}
 }
 
 // List 查询维修记录列表。
@@ -78,10 +80,20 @@ func (h *Handler) Create(c *gin.Context) {
 }
 
 // Update 修改维修记录。
+// 路由层已校验 repair:advance; 这里再做资源级归属判定:
+// 维修人员只能推进自己负责的记录, 他人记录需要 repair:manage(管理岗)。
 func (h *Handler) Update(c *gin.Context) {
 	id, err := httpx.ParseID(c, "id")
 	if err != nil {
 		response.Fail(c, err)
+		return
+	}
+	existing, err := h.service.Get(c.Request.Context(), id)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	if !h.guard.EnsureOwner(c, existing.AssigneeID, "repair.update", "repair", existing.RepairNo) {
 		return
 	}
 	var req UpdateRequest
@@ -97,11 +109,19 @@ func (h *Handler) Update(c *gin.Context) {
 	response.OK(c, entity)
 }
 
-// Finish 完成维修。
+// Finish 完成维修, 同样仅限负责人本人或管理岗。
 func (h *Handler) Finish(c *gin.Context) {
 	id, err := httpx.ParseID(c, "id")
 	if err != nil {
 		response.Fail(c, err)
+		return
+	}
+	existing, err := h.service.Get(c.Request.Context(), id)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	if !h.guard.EnsureOwner(c, existing.AssigneeID, "repair.finish", "repair", existing.RepairNo) {
 		return
 	}
 	var req FinishRequest
@@ -110,6 +130,26 @@ func (h *Handler) Finish(c *gin.Context) {
 		return
 	}
 	entity, err := h.service.Finish(c.Request.Context(), id, req)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.OK(c, entity)
+}
+
+// Reassign 改派维修负责人(管理岗)。
+func (h *Handler) Reassign(c *gin.Context) {
+	id, err := httpx.ParseID(c, "id")
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	var req ReassignRequest
+	if err := httpx.BindJSON(c, &req); err != nil {
+		response.Fail(c, err)
+		return
+	}
+	entity, err := h.service.Reassign(c.Request.Context(), id, req)
 	if err != nil {
 		response.Fail(c, err)
 		return

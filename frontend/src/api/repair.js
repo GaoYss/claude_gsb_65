@@ -8,6 +8,7 @@ export const repairApi = {
   create: (data) => request.post('/repairs', data),
   update: (id, data) => request.put(`/repairs/${id}`, data),
   finish: (id, data) => request.post(`/repairs/${id}/finish`, data),
+  reassign: (id, data) => request.post(`/repairs/${id}/reassign`, data),
   remove: (id) => request.delete(`/repairs/${id}`),
   meta: () => request.get('/repairs/meta'),
   statistics: () => request.get('/repairs/statistics'),

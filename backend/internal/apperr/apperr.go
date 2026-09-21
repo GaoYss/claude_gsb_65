@@ -8,10 +8,12 @@ import (
 
 // 业务错误码, 前后端共用同一套取值。
 const (
-	CodeInvalidArgument = "INVALID_ARGUMENT"
-	CodeNotFound        = "NOT_FOUND"
-	CodeConflict        = "CONFLICT"
-	CodeInternalError   = "INTERNAL_ERROR"
+	CodeInvalidArgument  = "INVALID_ARGUMENT"
+	CodeNotFound         = "NOT_FOUND"
+	CodeConflict         = "CONFLICT"
+	CodePermissionDenied = "PERMISSION_DENIED"
+	CodeUnauthenticated  = "UNAUTHENTICATED"
+	CodeInternalError    = "INTERNAL_ERROR"
 )
 
 // Error 是可以直接映射为 HTTP 响应的业务错误。
@@ -19,6 +21,8 @@ type Error struct {
 	Status  int
 	Code    string
 	Message string
+	// Details 携带机器可读的补充信息(如缺失的权限点), 会原样返回给客户端。
+	Details map[string]any
 	cause   error
 }
 
@@ -57,6 +61,21 @@ func NotFound(format string, args ...any) *Error {
 // Conflict 业务状态冲突(409)。
 func Conflict(format string, args ...any) *Error {
 	return New(http.StatusConflict, CodeConflict, fmt.Sprintf(format, args...))
+}
+
+// Unauthenticated 未登录或登录态失效(401)。
+func Unauthenticated(format string, args ...any) *Error {
+	return New(http.StatusUnauthorized, CodeUnauthenticated, fmt.Sprintf(format, args...))
+}
+
+// PermissionDenied 越权操作(403)。requiredPermission 为完成该操作所缺失的授权点,
+// 会通过 Details 返回给前端并写入审计日志, 明确告知"缺了哪一项授权"。
+func PermissionDenied(requiredPermission, message string) *Error {
+	err := New(http.StatusForbidden, CodePermissionDenied, message)
+	if requiredPermission != "" {
+		err.Details = map[string]any{"required_permission": requiredPermission}
+	}
+	return err
 }
 
 // Internal 服务端内部错误(500)。

@@ -19,6 +19,7 @@ type Filter struct {
 	Keyword     string
 	FaultID     uint
 	LampID      uint
+	AssigneeID  uint // 负责人过滤: 维修人员查询时由服务层强制限定为本人
 	Repairman   string
 	RepairTeam  string
 	Status      string
@@ -282,7 +283,7 @@ func (r *Repository) AverageDurationHours(ctx context.Context) (float64, error) 
 func (r *Repository) DistinctValues(ctx context.Context, column string) ([]string, error) {
 	values := make([]string, 0)
 	err := r.session(ctx).Model(&Repair{}).
-		Where(column + " <> ''").
+		Where(column+" <> ''").
 		Distinct().
 		Order(column).
 		Pluck(column, &values).Error
@@ -306,6 +307,9 @@ func applyFilter(statement *gorm.DB, filter Filter) *gorm.DB {
 	}
 	if filter.LampID > 0 {
 		statement = statement.Where("lamp_id = ?", filter.LampID)
+	}
+	if filter.AssigneeID > 0 {
+		statement = statement.Where("assignee_id = ?", filter.AssigneeID)
 	}
 	if value := strings.TrimSpace(filter.Repairman); value != "" {
 		statement = statement.Where("repairman = ?", value)

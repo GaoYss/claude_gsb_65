@@ -31,16 +31,34 @@ type LampPort interface {
 	UpdateRunStatus(ctx context.Context, id uint, status string) error
 }
 
+// AssigneeInfo 是故障负责人的简要信息。
+type AssigneeInfo struct {
+	ID          uint
+	Username    string
+	DisplayName string
+	Role        string
+	Active      bool
+}
+
+// UserDirectoryPort 由认证模块实现, 改派时用它校验负责人身份。
+type UserDirectoryPort interface {
+	GetAssignee(ctx context.Context, id uint) (AssigneeInfo, error)
+}
+
 // Service 承载故障登记的业务规则, 并向维修模块提供故障状态流转能力。
 type Service struct {
 	repo  *Repository
 	lamps LampPort
+	users UserDirectoryPort
 }
 
 // NewService 构造故障登记服务。
 func NewService(repo *Repository, lamps LampPort) *Service {
 	return &Service{repo: repo, lamps: lamps}
 }
+
+// SetUserDirectory 注入用户目录端口, 由 bootstrap 装配以避免构造循环。
+func (s *Service) SetUserDirectory(users UserDirectoryPort) { s.users = users }
 
 // Repository 暴露仓储, 供 bootstrap 装配其它模块所需的端口。
 func (s *Service) Repository() *Repository { return s.repo }
@@ -212,6 +230,73 @@ func (s *Service) Close(ctx context.Context, id uint, req CloseRequest) (*Fault,
 		slog.Warn("同步路灯运行状态失败", "lamp_id", entity.LampID, "fault_no", entity.FaultNo, "error", err)
 	}
 	return entity, nil
+}
+
+// Reassign 改派故障负责人(仅管理岗调用, 权限已在路由层拦截)。
+// 目标必须是启用中的维修人员。
+func (s *Service) Reassign(ctx context.Context, id uint, req ReassignRequest) (*Fault, error) {
+	entity, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if s.users == nil {
+		return nil, apperr.Internal("用户目录未装配, 无法改派")
+	}
+	target, err := s.users.GetAssignee(ctx, req.AssigneeID)
+	if err != nil {
+		return nil, err
+	}
+	if !target.Active {
+		return nil, apperr.BadRequest("目标负责人已被停用, 无法改派")
+	}
+	if target.Role != "repair" && target.Role != "admin" {
+		return nil, apperr.BadRequest("只能改派给维修人员, 目标角色: %s", target.Role)
+	}
+
+	assigneeID := target.ID
+	entity.AssigneeID = &assigneeID
+	entity.AssigneeName = target.DisplayName
+	if err := s.repo.Update(ctx, entity); err != nil {
+		return nil, err
+	}
+	return entity, nil
+}
+
+// ExceptionTransition 例外流转(仅管理岗): 忽略常规状态机, 强制把故障置为目标状态。
+// 用于现场无法按标准流程处理的特殊情形, 必须填写原因(随审计留痕)。
+func (s *Service) ExceptionTransition(ctx context.Context, id uint, req ExceptionRequest) (*Fault, error) {
+	entity, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !IsValidStatus(req.ToStatus) {
+		return nil, apperr.BadRequest("非法的目标状态: %s", req.ToStatus)
+	}
+	if entity.Status == req.ToStatus {
+		return nil, apperr.Conflict("故障 %s 当前已是 %s 状态", entity.FaultNo, StatusLabel(req.ToStatus))
+	}
+
+	columns := map[string]any{"status": req.ToStatus}
+	if req.ToStatus == StatusClosed {
+		now := time.Now()
+		entity.ClosedAt = &now
+		columns["closed_at"] = now
+		remark := "[例外流转] " + strings.TrimSpace(req.Reason)
+		entity.CloseRemark = remark
+		columns["close_remark"] = remark
+	} else {
+		entity.ClosedAt = nil
+		columns["closed_at"] = nil
+	}
+	entity.Status = req.ToStatus
+
+	if err := s.repo.UpdateColumns(ctx, id, columns); err != nil {
+		return nil, err
+	}
+	if err := s.syncLampStatus(ctx, entity.LampID); err != nil {
+		slog.Warn("同步路灯运行状态失败", "lamp_id", entity.LampID, "fault_no", entity.FaultNo, "error", err)
+	}
+	return s.repo.GetByID(ctx, id)
 }
 
 // Delete 删除故障, 仅允许删除已关闭且没有维修记录的故障。

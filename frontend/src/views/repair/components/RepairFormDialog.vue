@@ -43,6 +43,25 @@
       </el-descriptions>
 
       <el-row :gutter="16">
+        <el-col v-if="canAssign && !isEdit" :span="12">
+          <el-form-item label="指派负责人">
+            <el-select
+              v-model="form.assignee_id"
+              filterable
+              clearable
+              placeholder="留空则负责人为自己"
+              style="width: 100%"
+              :loading="userLoading"
+            >
+              <el-option
+                v-for="item in assignableUsers"
+                :key="item.id"
+                :label="`${item.display_name}（${item.username}）`"
+                :value="item.id"
+              />
+            </el-select>
+          </el-form-item>
+        </el-col>
         <el-col :span="12">
           <el-form-item label="维修人员" prop="repairman">
             <el-select v-model="form.repairman" filterable allow-create placeholder="选择或输入维修人员" style="width: 100%">
@@ -104,12 +123,15 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import StatusTag from '@/components/common/StatusTag.vue'
 import { faultApi } from '@/api/fault'
 import { repairApi } from '@/api/repair'
+import { userApi } from '@/api/auth'
 import { useDictStore } from '@/stores/dict'
+import { useAuthStore } from '@/stores/auth'
+import { PERMISSIONS as PERM } from '@/constants/permission'
 import { FAULT_LEVEL, FAULT_STATUS } from '@/constants/dict'
 
 const props = defineProps({
@@ -121,11 +143,17 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue', 'saved'])
 
 const dictStore = useDictStore()
+const auth = useAuthStore()
 const formRef = ref(null)
 const submitting = ref(false)
 const faultLoading = ref(false)
 const faultCandidates = ref([])
 const selectedFault = ref(null)
+const userLoading = ref(false)
+const assignableUsers = ref([])
+
+// 仅管理岗可在派工时指定他人为负责人。
+const canAssign = computed(() => auth.can(PERM.REPAIR_ASSIGN) || auth.can(PERM.REPAIR_MANAGE))
 
 const isEdit = computed(() => Boolean(props.model?.id))
 const lockedFault = computed(() => Boolean(props.fault?.id))
@@ -135,6 +163,7 @@ const teamOptions = computed(() => dictStore.repairMeta.teams ?? [])
 
 const createForm = () => ({
   fault_id: undefined,
+  assignee_id: undefined,
   repairman: '',
   repair_team: '',
   contact_phone: '',
@@ -147,9 +176,41 @@ const createForm = () => ({
 
 const form = reactive(createForm())
 
+// 选择负责人时自动带出署名(仍可手动改)。
+watch(
+  () => form.assignee_id,
+  (id) => {
+    if (!id || isEdit.value) return
+    const target = assignableUsers.value.find((item) => item.id === id)
+    if (target) form.repairman = target.display_name
+  },
+)
+
+// 弹窗打开时加载可派工的维修人员列表。
+watch(
+  () => props.modelValue,
+  (visible) => {
+    if (visible && canAssign.value && !props.model) {
+      loadAssignableUsers()
+    }
+  },
+)
+
 const rules = {
   fault_id: [{ required: true, message: '请选择关联故障', trigger: 'change' }],
-  repairman: [{ required: true, message: '请选择或输入维修人员', trigger: 'change' }],
+}
+
+async function loadAssignableUsers() {
+  if (!canAssign.value) return
+  userLoading.value = true
+  try {
+    const data = await userApi.list({ role: 'repair', page_size: 200 }, { silent: true })
+    assignableUsers.value = data.items || []
+  } catch {
+    assignableUsers.value = []
+  } finally {
+    userLoading.value = false
+  }
 }
 
 async function searchFaults(keyword = '') {

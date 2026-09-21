@@ -5,7 +5,8 @@ import "streetlight/pkg/pagination"
 // CreateRequest 维修记录录入请求。
 type CreateRequest struct {
 	FaultID      uint     `json:"fault_id" binding:"required"`
-	Repairman    string   `json:"repairman" binding:"required,max=64"`
+	AssigneeID   uint     `json:"assignee_id"` // 负责人(管理岗派工时指定); 维修人员自助认领时忽略, 强制为本人
+	Repairman    string   `json:"repairman" binding:"omitempty,max=64"`
 	RepairTeam   string   `json:"repair_team" binding:"max=64"`
 	ContactPhone string   `json:"contact_phone" binding:"max=32"`
 	StartedAt    string   `json:"started_at" binding:"omitempty,max=32"`
@@ -13,6 +14,11 @@ type CreateRequest struct {
 	Materials    string   `json:"materials" binding:"max=255"`
 	Cost         *float64 `json:"cost" binding:"omitempty,min=0"`
 	Remark       string   `json:"remark" binding:"max=255"`
+}
+
+// ReassignRequest 改派维修负责人(仅管理岗)。
+type ReassignRequest struct {
+	AssigneeID uint `json:"assignee_id" binding:"required"`
 }
 
 // UpdateRequest 修改维修记录, 仅未完成的记录允许修改。

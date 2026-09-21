@@ -18,6 +18,8 @@ type Envelope struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 	Data    any    `json:"data,omitempty"`
+	// Details 仅用于错误响应, 携带机器可读的补充信息(如缺失的权限点)。
+	Details map[string]any `json:"details,omitempty"`
 }
 
 // PageData 是列表接口统一的分页结构。
@@ -68,7 +70,7 @@ func Fail(c *gin.Context, err error) {
 		if appErr.Status >= http.StatusInternalServerError {
 			_ = c.Error(err)
 		}
-		c.JSON(appErr.Status, Envelope{Code: appErr.Code, Message: appErr.Message})
+		c.JSON(appErr.Status, Envelope{Code: appErr.Code, Message: appErr.Message, Details: appErr.Details})
 		return
 	}
 

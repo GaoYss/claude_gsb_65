@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"streetlight/internal/apperr"
+	"streetlight/internal/modules/auth"
 	"streetlight/internal/modules/fault"
 	"streetlight/pkg/pagination"
 )
@@ -33,10 +34,25 @@ type FaultPort interface {
 	SyncRepairStats(ctx context.Context, faultID uint, repairCount int, latestRepairID *uint) error
 }
 
+// AssigneeInfo 维修负责人简要信息。
+type AssigneeInfo struct {
+	ID          uint
+	Username    string
+	DisplayName string
+	Role        string
+	Active      bool
+}
+
+// UserDirectoryPort 由认证模块实现, 派工/改派时校验负责人身份。
+type UserDirectoryPort interface {
+	GetAssignee(ctx context.Context, id uint) (AssigneeInfo, error)
+}
+
 // Service 承载维修记录录入的业务规则。
 type Service struct {
 	repo   *Repository
 	faults FaultPort
+	users  UserDirectoryPort
 }
 
 // NewService 构造维修记录服务。
@@ -44,17 +60,30 @@ func NewService(repo *Repository, faults FaultPort) *Service {
 	return &Service{repo: repo, faults: faults}
 }
 
+// SetUserDirectory 注入用户目录端口, 由 bootstrap 装配以避免构造循环。
+func (s *Service) SetUserDirectory(users UserDirectoryPort) { s.users = users }
+
 // Get 查询维修记录详情。
 func (s *Service) Get(ctx context.Context, id uint) (*Repair, error) {
 	return s.repo.GetByID(ctx, id)
 }
 
 // List 分页查询维修记录。
+//
+// 数据范围(与页面/导出/看板同一套角色结论):
+//   - 管理岗(有 repair:manage): 全部记录;
+//   - 维修人员(有 repair:advance, 无 manage): 仅自己负责的记录;
+//   - 登记人员(只有 repair:view): 全部只读。
 func (s *Service) List(ctx context.Context, query ListQuery) ([]Repair, int64, pagination.Query, error) {
 	page := pagination.Parse(query.Params, repairSortSpec)
 	filter, err := buildFilter(query)
 	if err != nil {
 		return nil, 0, page, err
+	}
+	if operator := auth.FromContext(ctx); operator != nil {
+		if !operator.Can(auth.PermRepairManage) && operator.Can(auth.PermRepairAdvance) {
+			filter.AssigneeID = operator.ID
+		}
 	}
 	items, total, err := s.repo.List(ctx, filter, page)
 	if err != nil {
@@ -72,7 +101,13 @@ func (s *Service) ListByFault(ctx context.Context, faultID uint) ([]Repair, erro
 }
 
 // Create 录入维修记录(维修开工), 并联动故障与路灯状态。
+//
+// 负责人(assignee)判定:
+//   - 维修人员自助开工: 只能以本人为负责人, 请求里的 assignee_id 被忽略;
+//   - 管理岗派工(有 repair:assign/manage): 可指定任意启用中的维修人员为负责人。
 func (s *Service) Create(ctx context.Context, req CreateRequest) (*Repair, error) {
+	operator := auth.FromContext(ctx)
+
 	target, err := s.faults.GetByID(ctx, req.FaultID)
 	if err != nil {
 		return nil, err
@@ -92,9 +127,10 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Repair, error
 		return nil, apperr.Conflict("故障 %s 已有进行中的维修记录 %s, 请先完成后再录入", target.FaultNo, ongoing.RepairNo)
 	}
 
-	repairman := strings.TrimSpace(req.Repairman)
-	if repairman == "" {
-		return nil, apperr.BadRequest("维修人员不能为空")
+	// 确定负责人与维修人员署名。
+	assigneeID, repairman, err := s.resolveAssignee(ctx, operator, req)
+	if err != nil {
+		return nil, err
 	}
 
 	startedAt, err := parseTime(req.StartedAt, time.Now())
@@ -110,6 +146,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Repair, error
 		FaultNo:      target.FaultNo,
 		LampID:       target.LampID,
 		LampCode:     target.LampCode,
+		AssigneeID:   assigneeID,
 		Repairman:    repairman,
 		RepairTeam:   strings.TrimSpace(req.RepairTeam),
 		ContactPhone: strings.TrimSpace(req.ContactPhone),
@@ -130,6 +167,83 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Repair, error
 		return nil, err
 	}
 
+	entity.FillDuration()
+	return entity, nil
+}
+
+// resolveAssignee 依据操作者与请求确定维修负责人, 返回 assigneeID 与署名。
+func (s *Service) resolveAssignee(ctx context.Context, operator *auth.Principal, req CreateRequest) (uint, string, error) {
+	if operator == nil {
+		return 0, "", apperr.Unauthenticated("未登录, 无法录入维修记录")
+	}
+
+	requestedName := strings.TrimSpace(req.Repairman)
+
+	// 管理岗派工: 可指定负责人。
+	if operator.Can(auth.PermRepairAssign) || operator.Can(auth.PermRepairManage) {
+		if req.AssigneeID > 0 {
+			if s.users == nil {
+				return 0, "", apperr.Internal("用户目录未装配, 无法派工")
+			}
+			target, err := s.users.GetAssignee(ctx, req.AssigneeID)
+			if err != nil {
+				return 0, "", err
+			}
+			if !target.Active {
+				return 0, "", apperr.BadRequest("目标负责人已停用, 无法派工")
+			}
+			name := requestedName
+			if name == "" {
+				name = target.DisplayName
+			}
+			return target.ID, name, nil
+		}
+		// 未指定负责人时, 管理岗自己挂名。
+		name := requestedName
+		if name == "" {
+			name = operator.DisplayName
+		}
+		return operator.ID, name, nil
+	}
+
+	// 维修人员: 只能以本人为负责人。
+	if req.AssigneeID > 0 && req.AssigneeID != operator.ID {
+		return 0, "", apperr.PermissionDenied(
+			auth.PermRepairAssign,
+			"你不能把维修记录指派给他人, 缺少授权: "+auth.PermRepairAssign+"("+auth.PermissionLabel(auth.PermRepairAssign)+")",
+		)
+	}
+	name := requestedName
+	if name == "" {
+		name = operator.DisplayName
+	}
+	return operator.ID, name, nil
+}
+
+// Reassign 改派维修负责人(仅管理岗)。
+func (s *Service) Reassign(ctx context.Context, id uint, req ReassignRequest) (*Repair, error) {
+	entity, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if s.users == nil {
+		return nil, apperr.Internal("用户目录未装配, 无法改派")
+	}
+	target, err := s.users.GetAssignee(ctx, req.AssigneeID)
+	if err != nil {
+		return nil, err
+	}
+	if !target.Active {
+		return nil, apperr.BadRequest("目标负责人已停用, 无法改派")
+	}
+	if target.Role != "repair" && target.Role != "admin" {
+		return nil, apperr.BadRequest("只能改派给维修人员, 目标角色: %s", target.Role)
+	}
+	entity.AssigneeID = target.ID
+	entity.Repairman = target.DisplayName
+	if err := s.repo.Update(ctx, entity); err != nil {
+		return nil, err
+	}
 	entity.FillDuration()
 	return entity, nil
 }

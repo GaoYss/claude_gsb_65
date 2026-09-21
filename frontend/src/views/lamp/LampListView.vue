@@ -2,7 +2,7 @@
   <div class="page">
     <PageHeader title="路灯台账" description="维护每盏路灯的档案信息与运行状态, 台账是故障登记与维修的基础数据">
       <el-button :icon="Refresh" @click="load">刷新</el-button>
-      <el-button type="primary" :icon="Plus" @click="openCreate">新增路灯</el-button>
+      <el-button v-permission="PERM.LAMP_MANAGE" type="primary" :icon="Plus" @click="openCreate">新增路灯</el-button>
     </PageHeader>
 
     <el-card shadow="never">
@@ -43,9 +43,9 @@
         </el-table-column>
         <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
-            <el-button link type="warning" @click="goRegisterFault(row)">登记故障</el-button>
-            <el-button link type="danger" @click="handleDelete(row)">删除</el-button>
+            <el-button v-permission="PERM.LAMP_MANAGE" link type="primary" @click="openEdit(row)">编辑</el-button>
+            <el-button v-permission="PERM.FAULT_REGISTER" link type="warning" @click="goRegisterFault(row)">登记故障</el-button>
+            <el-button v-permission="PERM.LAMP_MANAGE" link type="danger" @click="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -82,6 +82,7 @@ import LampFormDialog from './components/LampFormDialog.vue'
 import { lampApi } from '@/api/lamp'
 import { useDictStore } from '@/stores/dict'
 import { RUN_STATUS } from '@/constants/dict'
+import { PERMISSIONS as PERM } from '@/constants/permission'
 import { formatDate } from '@/utils/format'
 import { useListPage } from '@/composables/useListPage'
 

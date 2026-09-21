@@ -2,7 +2,8 @@
   <div class="page">
     <PageHeader title="维修记录录入" description="记录维修过程、耗材与费用, 完工后自动联动故障与路灯状态">
       <el-button :icon="Refresh" @click="load">刷新</el-button>
-      <el-button type="primary" :icon="Plus" @click="openCreate">录入维修记录</el-button>
+      <el-button v-permission="PERM.EXPORT_REPAIR" :icon="Download" @click="handleExport">导出 CSV</el-button>
+      <el-button v-permission="PERM.REPAIR_CLAIM" type="primary" :icon="Plus" @click="openCreate">录入维修记录</el-button>
     </PageHeader>
 
     <el-card shadow="never">
@@ -37,6 +38,12 @@
         <el-table-column prop="fault_no" label="故障单号" width="140" />
         <el-table-column prop="lamp_code" label="路灯编号" width="110" />
         <el-table-column prop="repairman" label="维修人员" width="100" />
+        <el-table-column label="负责人" width="110">
+          <template #default="{ row }">
+            <el-tag v-if="isMine(row)" type="warning" size="small">本人</el-tag>
+            <span v-else>{{ row.repairman }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="repair_team" label="维修班组" width="130" />
         <el-table-column label="开工时间" width="150">
           <template #default="{ row }">{{ formatDateTime(row.started_at) }}</template>
@@ -60,12 +67,13 @@
           <template #default="{ row }">{{ formatMoney(row.cost) }}</template>
         </el-table-column>
         <el-table-column prop="content" label="维修内容" min-width="180" show-overflow-tooltip />
-        <el-table-column label="操作" width="240" fixed="right">
+        <el-table-column label="操作" width="300" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="openDetail(row)">故障详情</el-button>
-            <el-button v-if="row.status === 'ongoing'" link type="success" @click="openFinish(row)">完成维修</el-button>
-            <el-button v-if="row.status === 'ongoing'" link type="primary" @click="openEdit(row)">编辑</el-button>
-            <el-button link type="danger" @click="handleDelete(row)">删除</el-button>
+            <el-button v-if="row.status === 'ongoing' && canAdvance(row)" link type="success" @click="openFinish(row)">完成维修</el-button>
+            <el-button v-if="row.status === 'ongoing' && canAdvance(row)" link type="primary" @click="openEdit(row)">编辑</el-button>
+            <el-button v-permission="PERM.REPAIR_REASSIGN" link type="warning" @click="openReassign(row)">改派</el-button>
+            <el-button v-permission="PERM.REPAIR_MANAGE" link type="danger" @click="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -81,6 +89,12 @@
     <RepairFormDialog v-model="formVisible" :model="editing" @saved="handleSaved" />
     <FinishRepairDialog v-model="finishVisible" :model="finishing" @saved="handleSaved" />
     <FaultDetailDrawer v-model="detailVisible" :fault-id="activeFaultId" />
+    <AssigneePickerDialog
+      v-model="reassignVisible"
+      title="改派维修负责人"
+      :current-name="reassignTarget?.repairman"
+      @confirm="handleReassign"
+    />
   </div>
 </template>
 
@@ -88,15 +102,19 @@
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, RefreshLeft, Search } from '@element-plus/icons-vue'
+import { Download, Plus, Refresh, RefreshLeft, Search } from '@element-plus/icons-vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import StatusTag from '@/components/common/StatusTag.vue'
 import DataPagination from '@/components/common/DataPagination.vue'
+import AssigneePickerDialog from '@/components/common/AssigneePickerDialog.vue'
 import RepairFormDialog from './components/RepairFormDialog.vue'
 import FinishRepairDialog from './components/FinishRepairDialog.vue'
 import FaultDetailDrawer from '@/views/fault/components/FaultDetailDrawer.vue'
 import { repairApi } from '@/api/repair'
+import { exportApi } from '@/api/export'
 import { useDictStore } from '@/stores/dict'
+import { useAuthStore } from '@/stores/auth'
+import { PERMISSIONS as PERM } from '@/constants/permission'
 import { REPAIR_RESULT, REPAIR_STATUS } from '@/constants/dict'
 import { formatDateTime, formatDuration, formatMoney } from '@/utils/format'
 import { useListPage } from '@/composables/useListPage'
@@ -104,6 +122,7 @@ import { useListPage } from '@/composables/useListPage'
 const route = useRoute()
 const router = useRouter()
 const dictStore = useDictStore()
+const auth = useAuthStore()
 
 const { loading, rows, total, query, load, search, reset, changePage, changePageSize } = useListPage(repairApi.list, {
   keyword: '',
@@ -118,9 +137,51 @@ const dateRange = ref([])
 const formVisible = ref(false)
 const finishVisible = ref(false)
 const detailVisible = ref(false)
+const reassignVisible = ref(false)
 const editing = ref(null)
 const finishing = ref(null)
 const activeFaultId = ref(null)
+const reassignTarget = ref(null)
+
+// 是否可推进该记录: 管理岗可推进任意记录; 维修人员只能推进本人负责的记录。
+function isMine(row) {
+  return auth.user && row.assignee_id === auth.user.id
+}
+function canAdvance(row) {
+  return auth.can(PERM.REPAIR_MANAGE) || isMine(row)
+}
+
+function openReassign(row) {
+  reassignTarget.value = { ...row }
+  reassignVisible.value = true
+}
+
+async function handleReassign(assigneeId) {
+  try {
+    await repairApi.reassign(reassignTarget.value.id, { assignee_id: assigneeId })
+    ElMessage.success('已改派维修负责人')
+    reassignVisible.value = false
+    load()
+  } catch {
+    // 提示由拦截器处理
+  }
+}
+
+async function handleExport() {
+  try {
+    await exportApi.repairs({
+      keyword: query.keyword,
+      status: query.status,
+      result: query.result,
+      repairman: query.repairman,
+      start_date: query.start_date,
+      end_date: query.end_date,
+    })
+    ElMessage.success('导出已开始')
+  } catch {
+    // 越权提示由拦截器处理
+  }
+}
 
 function applyDateRange() {
   query.start_date = dateRange.value?.[0] ?? ''

@@ -2,7 +2,8 @@
   <div class="page">
     <PageHeader title="故障登记" description="受理路灯故障上报, 跟踪从登记到闭环的完整状态流转">
       <el-button :icon="Refresh" @click="load">刷新</el-button>
-      <el-button type="primary" :icon="Plus" @click="openCreate">登记故障</el-button>
+      <el-button v-permission="PERM.EXPORT_FAULT" :icon="Download" @click="handleExport">导出 CSV</el-button>
+      <el-button v-permission="PERM.FAULT_REGISTER" type="primary" :icon="Plus" @click="openCreate">登记故障</el-button>
     </PageHeader>
 
     <el-card shadow="never">
@@ -48,19 +49,26 @@
           <template #default="{ row }">{{ dictLabel(FAULT_SOURCE, row.source) }}</template>
         </el-table-column>
         <el-table-column prop="reporter" label="上报人" width="100" />
+        <el-table-column label="负责人" width="110">
+          <template #default="{ row }">
+            {{ row.assignee_name || '未指派' }}
+          </template>
+        </el-table-column>
         <el-table-column label="上报时间" width="150">
           <template #default="{ row }">{{ formatDateTime(row.reported_at) }}</template>
         </el-table-column>
         <el-table-column label="维修次数" width="90" align="center">
           <template #default="{ row }">{{ row.repair_count }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="260" fixed="right">
+        <el-table-column label="操作" width="380" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="openDetail(row)">详情</el-button>
-            <el-button v-if="isOpen(row)" link type="warning" @click="openRepair(row)">维修录入</el-button>
-            <el-button v-if="row.status !== 'closed'" link type="primary" @click="openEdit(row)">编辑</el-button>
-            <el-button v-if="row.status !== 'closed'" link type="info" @click="handleClose(row)">关闭</el-button>
-            <el-button v-if="row.status === 'closed'" link type="danger" @click="handleDelete(row)">删除</el-button>
+            <el-button v-if="isOpen(row)" v-permission="PERM.REPAIR_CLAIM" link type="warning" @click="openRepair(row)">维修录入</el-button>
+            <el-button v-if="row.status !== 'closed'" v-permission="PERM.FAULT_UPDATE" link type="primary" @click="openEdit(row)">编辑</el-button>
+            <el-button v-if="row.status !== 'closed'" v-permission="PERM.FAULT_CLOSE" link type="info" @click="handleClose(row)">关闭</el-button>
+            <el-button v-if="row.status !== 'closed'" v-permission="PERM.FAULT_EXCEPTION" link type="danger" @click="openException(row)">例外流转</el-button>
+            <el-button v-permission="PERM.FAULT_REASSIGN" link type="success" @click="openReassign(row)">改派</el-button>
+            <el-button v-if="row.status === 'closed'" v-permission="PERM.FAULT_DELETE" link type="danger" @click="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -82,6 +90,17 @@
     />
     <FaultDetailDrawer v-model="detailVisible" :fault-id="activeFaultId" />
     <RepairFormDialog v-model="repairVisible" :fault="repairTarget" @saved="handleSaved" />
+    <AssigneePickerDialog
+      v-model="reassignVisible"
+      title="改派故障负责人"
+      :current-name="reassignTarget?.assignee_name"
+      @confirm="handleReassign"
+    />
+    <ExceptionTransitionDialog
+      v-model="exceptionVisible"
+      :current-status="exceptionTarget?.status || ''"
+      @confirm="handleException"
+    />
   </div>
 </template>
 
@@ -89,16 +108,20 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, RefreshLeft, Search } from '@element-plus/icons-vue'
+import { Download, Plus, Refresh, RefreshLeft, Search } from '@element-plus/icons-vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import StatusTag from '@/components/common/StatusTag.vue'
 import DataPagination from '@/components/common/DataPagination.vue'
 import FaultFormDialog from './components/FaultFormDialog.vue'
 import FaultDetailDrawer from './components/FaultDetailDrawer.vue'
+import ExceptionTransitionDialog from './components/ExceptionTransitionDialog.vue'
+import AssigneePickerDialog from '@/components/common/AssigneePickerDialog.vue'
 import RepairFormDialog from '@/views/repair/components/RepairFormDialog.vue'
 import { faultApi } from '@/api/fault'
 import { lampApi } from '@/api/lamp'
+import { exportApi } from '@/api/export'
 import { useDictStore } from '@/stores/dict'
+import { PERMISSIONS as PERM } from '@/constants/permission'
 import { FAULT_LEVEL, FAULT_SOURCE, FAULT_STATUS, dictLabel } from '@/constants/dict'
 import { formatDateTime } from '@/utils/format'
 import { useListPage } from '@/composables/useListPage'
@@ -123,10 +146,14 @@ const dateRange = ref([])
 const formVisible = ref(false)
 const detailVisible = ref(false)
 const repairVisible = ref(false)
+const reassignVisible = ref(false)
+const exceptionVisible = ref(false)
 const editing = ref(null)
 const presetLamp = ref(null)
 const repairTarget = ref(null)
 const activeFaultId = ref(null)
+const reassignTarget = ref(null)
+const exceptionTarget = ref(null)
 
 const isOpen = (row) => row.status === 'pending' || row.status === 'processing'
 
@@ -164,6 +191,59 @@ function openDetail(row) {
 function openRepair(row) {
   repairTarget.value = { ...row }
   repairVisible.value = true
+}
+
+function openReassign(row) {
+  reassignTarget.value = { ...row }
+  reassignVisible.value = true
+}
+
+async function handleReassign(assigneeId) {
+  try {
+    await faultApi.reassign(reassignTarget.value.id, { assignee_id: assigneeId })
+    ElMessage.success('已改派故障负责人')
+    reassignVisible.value = false
+    load()
+  } catch {
+    // 提示由拦截器处理
+  }
+}
+
+function openException(row) {
+  exceptionTarget.value = { ...row }
+  exceptionVisible.value = true
+}
+
+async function handleException(payload) {
+  try {
+    await faultApi.exception(exceptionTarget.value.id, payload)
+    ElMessage.success('例外流转已执行并记录审计')
+    exceptionVisible.value = false
+    load()
+  } catch {
+    // 提示由拦截器处理
+  }
+}
+
+async function handleExport() {
+  try {
+    await exportApi.faults(buildExportParams())
+    ElMessage.success('导出已开始')
+  } catch {
+    // 越权或失败提示由拦截器处理
+  }
+}
+
+function buildExportParams() {
+  return {
+    keyword: query.keyword,
+    status: query.status,
+    fault_type: query.fault_type,
+    fault_level: query.fault_level,
+    start_date: query.start_date,
+    end_date: query.end_date,
+    only_open: query.only_open,
+  }
 }
 
 async function handleClose(row) {

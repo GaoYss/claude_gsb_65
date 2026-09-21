@@ -10,11 +10,18 @@ import (
 	"gorm.io/gorm/logger"
 	"gorm.io/gorm/schema"
 
+	"streetlight/internal/modules/auth"
 	"streetlight/internal/modules/fault"
 	"streetlight/internal/modules/lamp"
 	"streetlight/internal/modules/repair"
 	"streetlight/internal/modules/status"
 )
+
+// adminContext 构造管理岗登录上下文, 供需要登录态的维修录入流程使用。
+func adminContext() context.Context {
+	return (&auth.Principal{ID: 1, Username: "admin", DisplayName: "测试管理员", Role: auth.RoleAdmin}).
+		WithContext(context.Background())
+}
 
 type harness struct {
 	lamps   *lamp.Service
@@ -84,7 +91,7 @@ func (h *harness) createFault(t *testing.T, lampID uint, faultType string) *faul
 func intPointer(value int) *int { return &value }
 
 func TestOverviewAggregatesBusinessState(t *testing.T) {
-	ctx := context.Background()
+	ctx := adminContext()
 	h := newHarness(t)
 
 	openLamp := h.createLamp(t, "LD-S-001", "中山路")
@@ -124,7 +131,7 @@ func TestOverviewAggregatesBusinessState(t *testing.T) {
 }
 
 func TestLampStatusListAndTrack(t *testing.T) {
-	ctx := context.Background()
+	ctx := adminContext()
 	h := newHarness(t)
 
 	openLamp := h.createLamp(t, "LD-S-101", "解放路")

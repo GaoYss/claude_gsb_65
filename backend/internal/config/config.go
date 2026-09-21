@@ -15,6 +15,7 @@ type Config struct {
 	App      AppConfig
 	Server   ServerConfig
 	Database DatabaseConfig
+	Auth     AuthConfig
 }
 
 // AppConfig 应用级配置。
@@ -50,6 +51,12 @@ type DatabaseConfig struct {
 	LogLevel string
 }
 
+// AuthConfig 登录令牌配置。
+type AuthConfig struct {
+	TokenSecret string
+	TokenTTL    time.Duration
+}
+
 // Load 读取环境变量并组装配置, 未设置的项使用默认值。
 func Load() (*Config, error) {
 	loadDotEnv()
@@ -71,6 +78,10 @@ func Load() (*Config, error) {
 			Driver:   strings.ToLower(getEnv("DB_DRIVER", "sqlite")),
 			DSN:      getEnv("DB_DSN", "data/streetlight.db"),
 			LogLevel: getEnv("DB_LOG_LEVEL", "warn"),
+		},
+		Auth: AuthConfig{
+			TokenSecret: getEnv("AUTH_TOKEN_SECRET", "streetlight-dev-secret-change-me"),
+			TokenTTL:    getEnvDuration("AUTH_TOKEN_TTL", 12*time.Hour),
 		},
 	}
 

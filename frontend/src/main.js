@@ -7,6 +7,7 @@ import 'element-plus/dist/index.css'
 
 import App from './App.vue'
 import router from './router'
+import { permissionDirective } from './directives/permission'
 import './styles/main.css'
 
 const app = createApp(App)
@@ -18,4 +19,5 @@ Object.entries(ElementPlusIcons).forEach(([name, component]) => {
 app.use(createPinia())
 app.use(router)
 app.use(ElementPlus, { locale: zhCn })
+app.directive('permission', permissionDirective)
 app.mount('#app')
