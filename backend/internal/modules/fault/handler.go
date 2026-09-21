@@ -4,6 +4,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"streetlight/internal/httpx"
+	"streetlight/internal/modules/auth"
 	"streetlight/internal/response"
 )
 
@@ -119,4 +120,44 @@ func (h *Handler) Delete(c *gin.Context) {
 // Metadata 返回故障字典。
 func (h *Handler) Metadata(c *gin.Context) {
 	response.OK(c, h.service.Metadata())
+}
+
+// Transition 例外流转故障状态(仅管理岗, 需 fault:bypass 授权)。
+func (h *Handler) Transition(c *gin.Context) {
+	id, err := httpx.ParseID(c, "id")
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	var req TransitionRequest
+	if err := httpx.BindJSON(c, &req); err != nil {
+		response.Fail(c, err)
+		return
+	}
+	entity, previous, target, err := h.service.Transition(c.Request.Context(), id, req)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	c.Set(auth.ContextAuditNo, entity.FaultNo)
+	c.Set(auth.ContextAuditDetail,
+		"例外流转: "+StatusLabel(previous)+" → "+StatusLabel(target)+" 原因: "+req.Remark)
+	response.OK(c, entity)
+}
+
+// Export 导出故障 CSV(需 export:fault 授权)。
+func (h *Handler) Export(c *gin.Context) {
+	var query ListQuery
+	if err := httpx.BindQuery(c, &query); err != nil {
+		response.Fail(c, err)
+		return
+	}
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", "attachment; filename=faults.csv")
+	if err := h.service.ExportCSV(c.Request.Context(), c.Writer, query); err != nil {
+		if !c.Writer.Written() {
+			response.Fail(c, err)
+		}
+		return
+	}
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"streetlight/internal/apperr"
+	"streetlight/internal/modules/auth"
 	"streetlight/internal/modules/fault"
 	"streetlight/pkg/pagination"
 )
@@ -44,18 +45,26 @@ func NewService(repo *Repository, faults FaultPort) *Service {
 	return &Service{repo: repo, faults: faults}
 }
 
-// Get 查询维修记录详情。
+// Get 查询维修记录详情。维修人员只能查看本人负责的记录。
 func (s *Service) Get(ctx context.Context, id uint) (*Repair, error) {
-	return s.repo.GetByID(ctx, id)
+	entity, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureCanRead(ctx, entity); err != nil {
+		return nil, err
+	}
+	return entity, nil
 }
 
-// List 分页查询维修记录。
+// List 分页查询维修记录。维修人员被强制限定为本人负责的范围。
 func (s *Service) List(ctx context.Context, query ListQuery) ([]Repair, int64, pagination.Query, error) {
 	page := pagination.Parse(query.Params, repairSortSpec)
 	filter, err := buildFilter(query)
 	if err != nil {
 		return nil, 0, page, err
 	}
+	filter = ApplyOwnScope(ctx, filter)
 	items, total, err := s.repo.List(ctx, filter, page)
 	if err != nil {
 		return nil, 0, page, err
@@ -63,12 +72,36 @@ func (s *Service) List(ctx context.Context, query ListQuery) ([]Repair, int64, p
 	return items, total, page, nil
 }
 
-// ListByFault 查询某条故障的维修过程记录。
+// ListByFault 查询某条故障的维修过程记录。维修人员只能看到其中本人负责的记录。
 func (s *Service) ListByFault(ctx context.Context, faultID uint) ([]Repair, error) {
 	if _, err := s.faults.GetByID(ctx, faultID); err != nil {
 		return nil, err
 	}
-	return s.repo.ListByFault(ctx, faultID)
+	items, err := s.repo.ListByFault(ctx, faultID)
+	if err != nil {
+		return nil, err
+	}
+	scope, ownRepairman := ScopeFromContext(ctx)
+	if scope != auth.ScopeOwn {
+		return items, nil
+	}
+	filtered := make([]Repair, 0, len(items))
+	for _, item := range items {
+		if item.Repairman == ownRepairman {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered, nil
+}
+
+// ListForExport 按当前操作者范围导出全部(不分页)维修记录, 与列表使用同一过滤与范围结论。
+func (s *Service) ListForExport(ctx context.Context, query ListQuery) ([]Repair, error) {
+	filter, err := buildFilter(query)
+	if err != nil {
+		return nil, err
+	}
+	filter = ApplyOwnScope(ctx, filter)
+	return s.repo.ListAll(ctx, filter, "")
 }
 
 // Create 录入维修记录(维修开工), 并联动故障与路灯状态。
@@ -95,6 +128,10 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Repair, error
 	repairman := strings.TrimSpace(req.Repairman)
 	if repairman == "" {
 		return nil, apperr.BadRequest("维修人员不能为空")
+	}
+	// 维修人员只能为本人开工; 管理岗可代他人登记。
+	if err := ensureCanCreateAs(ctx, repairman); err != nil {
+		return nil, err
 	}
 
 	startedAt, err := parseTime(req.StartedAt, time.Now())
@@ -135,21 +172,32 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Repair, error
 }
 
 // Update 修改维修记录, 已完成的记录不允许修改。
+// 维修人员只能编辑本人负责且未完成的记录, 且不能借编辑改派负责人; 管理岗可改全部。
 func (s *Service) Update(ctx context.Context, id uint, req UpdateRequest) (*Repair, error) {
 	entity, err := s.repo.GetByID(ctx, id)
 	if err != nil {
+		return nil, err
+	}
+	if err := ensureCanAdvance(ctx, entity, auth.PermRepairUpdate); err != nil {
 		return nil, err
 	}
 	if entity.Status == StatusFinished {
 		return nil, apperr.Conflict("维修记录 %s 已完成, 不允许修改", entity.RepairNo)
 	}
 
+	principal := principalFrom(ctx)
 	if req.Repairman != nil {
-		repairman := strings.TrimSpace(*req.Repairman)
-		if repairman == "" {
+		next := strings.TrimSpace(*req.Repairman)
+		if next == "" {
 			return nil, apperr.BadRequest("维修人员不能为空")
 		}
-		entity.Repairman = repairman
+		// 变更负责人属于改派, 维修人员无权; 管理岗也应走专门的改派接口。
+		if next != entity.Repairman {
+			if principal == nil || !principal.Can(auth.PermRepairAssign) {
+				return nil, auth.Forbidden(auth.PermRepairAssign, "变更负责人属于改派操作")
+			}
+		}
+		entity.Repairman = next
 	}
 	if req.RepairTeam != nil {
 		entity.RepairTeam = strings.TrimSpace(*req.RepairTeam)
@@ -185,9 +233,13 @@ func (s *Service) Update(ctx context.Context, id uint, req UpdateRequest) (*Repa
 }
 
 // Finish 完成维修: 记录结果与完工时间, 结果为已修复时联动故障转为已修复。
+// 维修人员只能完工本人负责的记录; 管理岗可代办。
 func (s *Service) Finish(ctx context.Context, id uint, req FinishRequest) (*Repair, error) {
 	entity, err := s.repo.GetByID(ctx, id)
 	if err != nil {
+		return nil, err
+	}
+	if err := ensureCanAdvance(ctx, entity, auth.PermRepairFinish); err != nil {
 		return nil, err
 	}
 	if entity.Status == StatusFinished {
@@ -235,10 +287,13 @@ func (s *Service) Finish(ctx context.Context, id uint, req FinishRequest) (*Repa
 	return entity, nil
 }
 
-// Delete 删除维修记录, 已关闭故障的维修记录不允许删除。
+// Delete 删除维修记录, 已关闭故障的维修记录不允许删除。仅管理岗可删除。
 func (s *Service) Delete(ctx context.Context, id uint) error {
 	entity, err := s.repo.GetByID(ctx, id)
 	if err != nil {
+		return err
+	}
+	if err := ensureCanAdvance(ctx, entity, auth.PermRepairDelete); err != nil {
 		return err
 	}
 	target, err := s.faults.GetByID(ctx, entity.FaultID)
@@ -290,21 +345,24 @@ func (s *Service) Metadata(ctx context.Context) (*Meta, error) {
 	}, nil
 }
 
-// Statistics 汇总维修统计信息。
+// Statistics 汇总维修统计信息, 自动套用当前操作者的数据范围:
+// 维修人员只统计本人记录, 与列表/导出/看板完全一致。
 func (s *Service) Statistics(ctx context.Context) (*Statistics, error) {
-	total, err := s.repo.Count(ctx)
+	filter := ApplyOwnScope(ctx, Filter{})
+
+	total, err := s.repo.CountS(ctx, filter)
 	if err != nil {
 		return nil, err
 	}
-	byStatus, err := s.repo.CountByColumn(ctx, "status")
+	byStatus, err := s.repo.CountByColumnS(ctx, filter, "status")
 	if err != nil {
 		return nil, err
 	}
-	totalCost, err := s.repo.SumCost(ctx)
+	totalCost, err := s.repo.SumCostS(ctx, filter)
 	if err != nil {
 		return nil, err
 	}
-	averageDuration, err := s.repo.AverageDurationHours(ctx)
+	averageDuration, err := s.repo.AverageDurationHoursS(ctx, filter)
 	if err != nil {
 		return nil, err
 	}
@@ -320,6 +378,41 @@ func (s *Service) Statistics(ctx context.Context) (*Statistics, error) {
 		result.AverageCost = totalCost / float64(result.FinishedTotal)
 	}
 	return result, nil
+}
+
+// ScopeFilter 返回当前操作者的维修范围过滤条件, 供 status 看板模块复用同一结论。
+// 看板与列表/详情/导出使用完全相同的范围判定函数 ApplyOwnScope。
+func ScopeFilter(ctx context.Context) Filter {
+	return ApplyOwnScope(ctx, Filter{})
+}
+
+// Assign 改派: 仅管理岗可调用, 调整维修记录负责人/班组。
+// 返回的记录与 (原负责人, 新负责人) 供 handler 写审计明细。
+func (s *Service) Assign(ctx context.Context, id uint, req AssignRequest) (*Repair, string, string, error) {
+	entity, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, "", "", err
+	}
+	principal := principalFrom(ctx)
+	if principal == nil || !principal.Can(auth.PermRepairAssign) {
+		return nil, "", "", auth.Forbidden(auth.PermRepairAssign, "")
+	}
+
+	previous := entity.Repairman
+	newRepairman := strings.TrimSpace(req.Repairman)
+	if newRepairman == "" {
+		return nil, "", "", apperr.BadRequest("改派后的维修人员不能为空")
+	}
+
+	entity.Repairman = newRepairman
+	if req.RepairTeam != "" {
+		entity.RepairTeam = strings.TrimSpace(req.RepairTeam)
+	}
+	if err := s.repo.Update(ctx, entity); err != nil {
+		return nil, "", "", err
+	}
+	entity.FillDuration()
+	return entity, previous, newRepairman, nil
 }
 
 // buildFilter 将查询参数转换为仓储条件并解析日期区间。

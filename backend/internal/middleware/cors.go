@@ -32,6 +32,8 @@ func CORS(origins []string) gin.HandlerFunc {
 		}
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, "+HeaderRequestID)
+		// 允许前端读取导出文件名等自定义响应头。
+		c.Writer.Header().Set("Access-Control-Expose-Headers", "Content-Disposition, "+HeaderRequestID)
 		c.Writer.Header().Set("Access-Control-Max-Age", "86400")
 
 		if c.Request.Method == http.MethodOptions {

@@ -2,7 +2,8 @@
   <div v-loading="loading" class="page">
     <PageHeader title="运行看板" description="路灯台账、故障登记与维修进展的整体概览">
       <el-button :icon="Refresh" @click="load">刷新</el-button>
-      <el-button type="primary" :icon="Plus" @click="$router.push('/faults')">去登记故障</el-button>
+      <el-tag v-if="authStore.isRepairman" type="warning" effect="plain">当前为本人负责范围</el-tag>
+      <el-button v-if="can('fault:create')" type="primary" :icon="Plus" @click="$router.push('/faults')">去登记故障</el-button>
     </PageHeader>
 
     <div class="card-grid">
@@ -135,10 +136,14 @@ import StatCard from '@/components/common/StatCard.vue'
 import BarList from '@/components/common/BarList.vue'
 import StatusTag from '@/components/common/StatusTag.vue'
 import { statusApi } from '@/api/status'
+import { useAuthStore } from '@/stores/auth'
+import { usePermission } from '@/composables/usePermission'
 import { FAULT_LEVEL, FAULT_STATUS, RUN_STATUS } from '@/constants/dict'
 import { formatWaiting } from '@/utils/format'
 
 const router = useRouter()
+const authStore = useAuthStore()
+const { can } = usePermission()
 const loading = ref(false)
 
 const emptyOverview = () => ({

@@ -10,11 +10,19 @@ import (
 	"gorm.io/gorm/logger"
 	"gorm.io/gorm/schema"
 
+	"streetlight/internal/modules/auth"
 	"streetlight/internal/modules/fault"
 	"streetlight/internal/modules/lamp"
 	"streetlight/internal/modules/repair"
 	"streetlight/internal/modules/status"
 )
+
+// managerCtx 返回管理岗身份(全数据范围)的上下文。
+func managerCtx() context.Context {
+	return auth.WithPrincipal(context.Background(), &auth.Principal{
+		ID: 1, Username: "manager01", DisplayName: "管理岗", Role: auth.RoleManager,
+	})
+}
 
 type harness struct {
 	lamps   *lamp.Service
@@ -84,7 +92,7 @@ func (h *harness) createFault(t *testing.T, lampID uint, faultType string) *faul
 func intPointer(value int) *int { return &value }
 
 func TestOverviewAggregatesBusinessState(t *testing.T) {
-	ctx := context.Background()
+	ctx := managerCtx()
 	h := newHarness(t)
 
 	openLamp := h.createLamp(t, "LD-S-001", "中山路")
@@ -124,7 +132,7 @@ func TestOverviewAggregatesBusinessState(t *testing.T) {
 }
 
 func TestLampStatusListAndTrack(t *testing.T) {
-	ctx := context.Background()
+	ctx := managerCtx()
 	h := newHarness(t)
 
 	openLamp := h.createLamp(t, "LD-S-101", "解放路")

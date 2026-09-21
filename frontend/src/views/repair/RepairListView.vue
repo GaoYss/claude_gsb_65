@@ -1,8 +1,9 @@
 <template>
   <div class="page">
-    <PageHeader title="维修记录录入" description="记录维修过程、耗材与费用, 完工后自动联动故障与路灯状态">
+    <PageHeader title="维修记录" description="记录维修过程、耗材与费用, 完工后自动联动故障与路灯状态">
       <el-button :icon="Refresh" @click="load">刷新</el-button>
-      <el-button type="primary" :icon="Plus" @click="openCreate">录入维修记录</el-button>
+      <el-button v-if="can('export:repair')" :icon="Download" @click="handleExport">导出</el-button>
+      <el-button v-if="can('repair:create')" type="primary" :icon="Plus" @click="openCreate">录入维修记录</el-button>
     </PageHeader>
 
     <el-card shadow="never">
@@ -14,9 +15,16 @@
         <el-select v-model="query.result" placeholder="维修结果" clearable @change="handleSearch">
           <el-option v-for="(item, key) in REPAIR_RESULT" :key="key" :label="item.label" :value="key" />
         </el-select>
-        <el-select v-model="query.repairman" placeholder="维修人员" clearable @change="handleSearch">
+        <el-select
+          v-if="!authStore.isRepairman"
+          v-model="query.repairman"
+          placeholder="维修人员"
+          clearable
+          @change="handleSearch"
+        >
           <el-option v-for="item in dictStore.repairMeta.repairmen" :key="item" :label="item" :value="item" />
         </el-select>
+        <el-tag v-else type="warning" effect="plain" class="self-scope-tag">仅本人({{ authStore.displayName }})</el-tag>
         <el-date-picker
           v-model="dateRange"
           type="daterange"
@@ -60,12 +68,23 @@
           <template #default="{ row }">{{ formatMoney(row.cost) }}</template>
         </el-table-column>
         <el-table-column prop="content" label="维修内容" min-width="180" show-overflow-tooltip />
-        <el-table-column label="操作" width="240" fixed="right">
+        <el-table-column label="操作" width="280" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="openDetail(row)">故障详情</el-button>
-            <el-button v-if="row.status === 'ongoing'" link type="success" @click="openFinish(row)">完成维修</el-button>
-            <el-button v-if="row.status === 'ongoing'" link type="primary" @click="openEdit(row)">编辑</el-button>
-            <el-button link type="danger" @click="handleDelete(row)">删除</el-button>
+            <el-button
+              v-if="can('repair:finish') && row.status === 'ongoing' && ownsRepair(row)"
+              link
+              type="success"
+              @click="openFinish(row)"
+            >完成维修</el-button>
+            <el-button
+              v-if="can('repair:update') && row.status === 'ongoing' && ownsRepair(row)"
+              link
+              type="primary"
+              @click="openEdit(row)"
+            >编辑</el-button>
+            <el-button v-if="can('repair:assign')" link type="warning" @click="openAssign(row)">改派</el-button>
+            <el-button v-if="can('repair:delete')" link type="danger" @click="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -81,14 +100,40 @@
     <RepairFormDialog v-model="formVisible" :model="editing" @saved="handleSaved" />
     <FinishRepairDialog v-model="finishVisible" :model="finishing" @saved="handleSaved" />
     <FaultDetailDrawer v-model="detailVisible" :fault-id="activeFaultId" />
+
+    <el-dialog v-model="assignVisible" title="改派维修记录(管理岗)" width="460px">
+      <el-descriptions :column="1" border size="small" style="margin-bottom: 16px">
+        <el-descriptions-item label="维修单号">{{ assigning?.repair_no }}</el-descriptions-item>
+        <el-descriptions-item label="当前负责人">{{ assigning?.repairman }} / {{ assigning?.repair_team || '-' }}</el-descriptions-item>
+      </el-descriptions>
+      <el-form label-width="92px">
+        <el-form-item label="改派给" required>
+          <el-select v-model="assignForm.repairman" filterable allow-create placeholder="选择或输入新负责人" style="width: 100%">
+            <el-option v-for="item in dictStore.repairMeta.repairmen" :key="item" :label="item" :value="item" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="维修班组">
+          <el-select v-model="assignForm.repair_team" filterable allow-create clearable placeholder="选择或输入班组" style="width: 100%">
+            <el-option v-for="item in dictStore.repairMeta.teams" :key="item" :label="item" :value="item" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="改派原因">
+          <el-input v-model="assignForm.reason" type="textarea" :rows="2" maxlength="255" show-word-limit placeholder="将记入审计日志" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="assignVisible = false">取消</el-button>
+        <el-button type="warning" :loading="assignLoading" @click="handleAssign">确认改派</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, RefreshLeft, Search } from '@element-plus/icons-vue'
+import { Download, Plus, Refresh, RefreshLeft, Search } from '@element-plus/icons-vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import StatusTag from '@/components/common/StatusTag.vue'
 import DataPagination from '@/components/common/DataPagination.vue'
@@ -97,6 +142,9 @@ import FinishRepairDialog from './components/FinishRepairDialog.vue'
 import FaultDetailDrawer from '@/views/fault/components/FaultDetailDrawer.vue'
 import { repairApi } from '@/api/repair'
 import { useDictStore } from '@/stores/dict'
+import { useAuthStore } from '@/stores/auth'
+import { usePermission } from '@/composables/usePermission'
+import { downloadCsv } from '@/utils/download'
 import { REPAIR_RESULT, REPAIR_STATUS } from '@/constants/dict'
 import { formatDateTime, formatDuration, formatMoney } from '@/utils/format'
 import { useListPage } from '@/composables/useListPage'
@@ -104,12 +152,15 @@ import { useListPage } from '@/composables/useListPage'
 const route = useRoute()
 const router = useRouter()
 const dictStore = useDictStore()
+const authStore = useAuthStore()
+const { can, ownsRepair } = usePermission()
 
 const { loading, rows, total, query, load, search, reset, changePage, changePageSize } = useListPage(repairApi.list, {
   keyword: '',
   status: '',
   result: '',
-  repairman: '',
+  // 维修人员后端会强制限定本人; 这里也固定为本人, 页面与接口结论一致。
+  repairman: authStore.isRepairman ? authStore.displayName : '',
   start_date: '',
   end_date: '',
 })
@@ -121,6 +172,11 @@ const detailVisible = ref(false)
 const editing = ref(null)
 const finishing = ref(null)
 const activeFaultId = ref(null)
+
+const assignVisible = ref(false)
+const assignLoading = ref(false)
+const assigning = ref(null)
+const assignForm = reactive({ repairman: '', repair_team: '', reason: '' })
 
 function applyDateRange() {
   query.start_date = dateRange.value?.[0] ?? ''
@@ -180,6 +236,38 @@ async function handleDelete(row) {
 function handleSaved() {
   load()
   dictStore.loadRepairMeta().catch(() => {})
+}
+
+function openAssign(row) {
+  assigning.value = { ...row }
+  assignForm.repairman = row.repairman
+  assignForm.repair_team = row.repair_team || ''
+  assignForm.reason = ''
+  assignVisible.value = true
+}
+
+async function handleAssign() {
+  if (!assignForm.repairman) {
+    ElMessage.warning('请填写改派后的负责人')
+    return
+  }
+  assignLoading.value = true
+  try {
+    await repairApi.assign(assigning.value.id, { ...assignForm })
+    ElMessage.success('改派完成, 已记录审计')
+    assignVisible.value = false
+    load()
+    dictStore.loadRepairMeta().catch(() => {})
+  } catch (error) {
+    // 统一提示
+  } finally {
+    assignLoading.value = false
+  }
+}
+
+// 导出: 与列表同一筛选条件, 维修人员仅本人范围由后端裁决。
+async function handleExport() {
+  await downloadCsv(repairApi.exportUrl, { ...query }, '维修记录.csv')
 }
 
 // 支持从其它页面携带 fault_id 直接录入维修记录。

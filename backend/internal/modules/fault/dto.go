@@ -30,6 +30,13 @@ type CloseRequest struct {
 	Remark string `json:"remark" binding:"max=255"`
 }
 
+// TransitionRequest 例外流转请求, 仅管理岗可用:
+// 跳过常规状态机约束, 强制把故障推进或回退到目标状态。
+type TransitionRequest struct {
+	TargetStatus string `json:"target_status" binding:"required,oneof=pending processing repaired closed"`
+	Remark       string `json:"remark" binding:"omitempty,max=255"` // 例外原因, 记入审计明细
+}
+
 // ListQuery 故障列表查询条件。
 type ListQuery struct {
 	pagination.Params

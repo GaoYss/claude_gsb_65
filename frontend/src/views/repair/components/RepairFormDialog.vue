@@ -45,7 +45,8 @@
       <el-row :gutter="16">
         <el-col :span="12">
           <el-form-item label="维修人员" prop="repairman">
-            <el-select v-model="form.repairman" filterable allow-create placeholder="选择或输入维修人员" style="width: 100%">
+            <el-input v-if="lockRepairman" :model-value="form.repairman" disabled />
+            <el-select v-else v-model="form.repairman" filterable allow-create placeholder="选择或输入维修人员" style="width: 100%">
               <el-option v-for="item in repairmanOptions" :key="item" :label="item" :value="item" />
             </el-select>
           </el-form-item>
@@ -110,6 +111,7 @@ import StatusTag from '@/components/common/StatusTag.vue'
 import { faultApi } from '@/api/fault'
 import { repairApi } from '@/api/repair'
 import { useDictStore } from '@/stores/dict'
+import { useAuthStore } from '@/stores/auth'
 import { FAULT_LEVEL, FAULT_STATUS } from '@/constants/dict'
 
 const props = defineProps({
@@ -121,6 +123,7 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue', 'saved'])
 
 const dictStore = useDictStore()
+const authStore = useAuthStore()
 const formRef = ref(null)
 const submitting = ref(false)
 const faultLoading = ref(false)
@@ -132,6 +135,8 @@ const lockedFault = computed(() => Boolean(props.fault?.id))
 const currentFault = computed(() => selectedFault.value ?? props.fault ?? null)
 const repairmanOptions = computed(() => dictStore.repairMeta.repairmen ?? [])
 const teamOptions = computed(() => dictStore.repairMeta.teams ?? [])
+// 维修人员只能为本人开工/编辑本人记录, 负责人字段锁定为本人; 管理岗可代他人登记。
+const lockRepairman = computed(() => authStore.role === 'repairman')
 
 const createForm = () => ({
   fault_id: undefined,
@@ -196,10 +201,15 @@ async function syncForm() {
   if (props.fault) {
     form.fault_id = props.fault.id
     selectedFault.value = props.fault
-    return
+  } else {
+    await searchFaults('')
   }
 
-  await searchFaults('')
+  // 维修人员只能为本人开工, 负责人固定为本人。
+  if (lockRepairman.value && !isEdit.value) {
+    form.repairman = authStore.displayName
+    form.repair_team = authStore.profile?.team || ''
+  }
 }
 
 async function handleSubmit() {

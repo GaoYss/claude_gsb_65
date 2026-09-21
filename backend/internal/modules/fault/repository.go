@@ -165,6 +165,16 @@ func (r *Repository) List(ctx context.Context, filter Filter, page pagination.Qu
 	return entities, total, nil
 }
 
+// ListAll 按条件查询全部故障(不分页), 供导出使用。
+func (r *Repository) ListAll(ctx context.Context, filter Filter) ([]Fault, error) {
+	entities := make([]Fault, 0)
+	if err := applyFilter(r.session(ctx).Model(&Fault{}), filter).
+		Order("reported_at DESC, id DESC").Find(&entities).Error; err != nil {
+		return nil, fmt.Errorf("导出故障记录失败: %w", err)
+	}
+	return entities, nil
+}
+
 // ListByLamp 查询某盏路灯的全部故障, 按上报时间倒序。
 func (r *Repository) ListByLamp(ctx context.Context, lampID uint) ([]Fault, error) {
 	entities := make([]Fault, 0)

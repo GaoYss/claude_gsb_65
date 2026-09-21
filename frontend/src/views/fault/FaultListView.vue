@@ -2,7 +2,8 @@
   <div class="page">
     <PageHeader title="故障登记" description="受理路灯故障上报, 跟踪从登记到闭环的完整状态流转">
       <el-button :icon="Refresh" @click="load">刷新</el-button>
-      <el-button type="primary" :icon="Plus" @click="openCreate">登记故障</el-button>
+      <el-button v-if="can('export:fault')" :icon="Download" @click="handleExport">导出</el-button>
+      <el-button v-if="can('fault:create')" type="primary" :icon="Plus" @click="openCreate">登记故障</el-button>
     </PageHeader>
 
     <el-card shadow="never">
@@ -54,13 +55,14 @@
         <el-table-column label="维修次数" width="90" align="center">
           <template #default="{ row }">{{ row.repair_count }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="260" fixed="right">
+        <el-table-column label="操作" width="320" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="openDetail(row)">详情</el-button>
-            <el-button v-if="isOpen(row)" link type="warning" @click="openRepair(row)">维修录入</el-button>
-            <el-button v-if="row.status !== 'closed'" link type="primary" @click="openEdit(row)">编辑</el-button>
-            <el-button v-if="row.status !== 'closed'" link type="info" @click="handleClose(row)">关闭</el-button>
-            <el-button v-if="row.status === 'closed'" link type="danger" @click="handleDelete(row)">删除</el-button>
+            <el-button v-if="can('repair:create') && isOpen(row)" link type="warning" @click="openRepair(row)">维修录入</el-button>
+            <el-button v-if="can('fault:update') && row.status !== 'closed'" link type="primary" @click="openEdit(row)">编辑</el-button>
+            <el-button v-if="can('fault:close') && row.status !== 'closed'" link type="info" @click="handleClose(row)">关闭</el-button>
+            <el-button v-if="can('fault:bypass')" link type="danger" @click="openTransition(row)">例外流转</el-button>
+            <el-button v-if="can('fault:delete') && row.status === 'closed'" link type="danger" @click="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -82,14 +84,50 @@
     />
     <FaultDetailDrawer v-model="detailVisible" :fault-id="activeFaultId" />
     <RepairFormDialog v-model="repairVisible" :fault="repairTarget" @saved="handleSaved" />
+
+    <el-dialog v-model="transitionVisible" title="例外流转(管理岗)" width="460px">
+      <el-alert
+        type="warning"
+        :closable="false"
+        show-icon
+        title="该操作跳过常规状态机约束, 会被完整记入审计日志, 请填写例外原因。"
+        style="margin-bottom: 16px"
+      />
+      <el-descriptions :column="1" border size="small" style="margin-bottom: 16px">
+        <el-descriptions-item label="故障单号">{{ transitionTarget?.fault_no }}</el-descriptions-item>
+        <el-descriptions-item label="当前状态">
+          <StatusTag :dict="FAULT_STATUS" :value="transitionTarget?.status" />
+        </el-descriptions-item>
+      </el-descriptions>
+      <el-form label-width="92px">
+        <el-form-item label="目标状态" required>
+          <el-select v-model="transitionForm.target_status" placeholder="选择目标状态" style="width: 100%">
+            <el-option
+              v-for="(item, key) in FAULT_STATUS"
+              :key="key"
+              :label="item.label"
+              :value="key"
+              :disabled="key === transitionTarget?.status"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="例外原因">
+          <el-input v-model="transitionForm.remark" type="textarea" :rows="3" maxlength="255" show-word-limit placeholder="说明为何需要强制推进或回退" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="transitionVisible = false">取消</el-button>
+        <el-button type="danger" :loading="transitionLoading" @click="handleTransition">确认例外流转</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, RefreshLeft, Search } from '@element-plus/icons-vue'
+import { Download, Plus, Refresh, RefreshLeft, Search } from '@element-plus/icons-vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import StatusTag from '@/components/common/StatusTag.vue'
 import DataPagination from '@/components/common/DataPagination.vue'
@@ -102,10 +140,13 @@ import { useDictStore } from '@/stores/dict'
 import { FAULT_LEVEL, FAULT_SOURCE, FAULT_STATUS, dictLabel } from '@/constants/dict'
 import { formatDateTime } from '@/utils/format'
 import { useListPage } from '@/composables/useListPage'
+import { usePermission } from '@/composables/usePermission'
+import { downloadCsv } from '@/utils/download'
 
 const route = useRoute()
 const router = useRouter()
 const dictStore = useDictStore()
+const { can } = usePermission()
 
 const { loading, rows, total, query, load, search, reset, changePage, changePageSize } = useListPage(faultApi.list, {
   keyword: '',
@@ -127,6 +168,11 @@ const editing = ref(null)
 const presetLamp = ref(null)
 const repairTarget = ref(null)
 const activeFaultId = ref(null)
+
+const transitionVisible = ref(false)
+const transitionLoading = ref(false)
+const transitionTarget = ref(null)
+const transitionForm = reactive({ target_status: '', remark: '' })
 
 const isOpen = (row) => row.status === 'pending' || row.status === 'processing'
 
@@ -164,6 +210,40 @@ function openDetail(row) {
 function openRepair(row) {
   repairTarget.value = { ...row }
   repairVisible.value = true
+}
+
+function openTransition(row) {
+  transitionTarget.value = { ...row }
+  transitionForm.target_status = ''
+  transitionForm.remark = ''
+  transitionVisible.value = true
+}
+
+async function handleTransition() {
+  if (!transitionForm.target_status) {
+    ElMessage.warning('请选择目标状态')
+    return
+  }
+  transitionLoading.value = true
+  try {
+    await faultApi.transition(transitionTarget.value.id, {
+      target_status: transitionForm.target_status,
+      remark: transitionForm.remark,
+    })
+    ElMessage.success('例外流转已完成并记录审计')
+    transitionVisible.value = false
+    load()
+  } catch (error) {
+    // 统一拦截器提示
+  } finally {
+    transitionLoading.value = false
+  }
+}
+
+// 导出: 范围与筛选条件与列表一致, 能否导出由后端 export:fault 统一裁决。
+async function handleExport() {
+  const params = { ...query }
+  await downloadCsv(faultApi.exportUrl, params, '故障列表.csv')
 }
 
 async function handleClose(row) {

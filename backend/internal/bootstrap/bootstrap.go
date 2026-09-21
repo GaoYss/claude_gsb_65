@@ -14,6 +14,7 @@ import (
 	"streetlight/internal/logging"
 	"streetlight/internal/middleware"
 	"streetlight/internal/module"
+	"streetlight/internal/modules/auth"
 	"streetlight/internal/response"
 )
 
@@ -23,6 +24,7 @@ type App struct {
 	db      *gorm.DB
 	engine  *gin.Engine
 	modules []module.Module
+	auth    *auth.Module
 }
 
 // New 完成日志、数据库、数据迁移、演示数据与路由的初始化。
@@ -39,7 +41,7 @@ func New(cfg *config.Config) (*App, error) {
 
 	modules := buildModules(db)
 	models := make([]any, 0)
-	for _, item := range modules {
+	for _, item := range modules.all {
 		models = append(models, item.Models()...)
 	}
 	if err := database.AutoMigrate(db, models); err != nil {
@@ -52,7 +54,7 @@ func New(cfg *config.Config) (*App, error) {
 		}
 	}
 
-	app := &App{config: cfg, db: db, modules: modules}
+	app := &App{config: cfg, db: db, modules: modules.all, auth: modules.auth}
 	app.engine = app.buildRouter()
 	return app, nil
 }
@@ -74,6 +76,8 @@ func (a *App) buildRouter() *gin.Engine {
 		middleware.Logger(),
 		middleware.Recovery(),
 		middleware.CORS(a.config.Server.CORSOrigins),
+		auth.Authenticate(a.auth.Service()),
+		auth.Audit(a.auth.Service()),
 	)
 
 	engine.NoRoute(func(c *gin.Context) {

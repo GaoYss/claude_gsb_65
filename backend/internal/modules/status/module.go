@@ -4,6 +4,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"streetlight/internal/modules/auth"
 	"streetlight/internal/modules/fault"
 	"streetlight/internal/modules/lamp"
 	"streetlight/internal/modules/repair"
@@ -28,11 +29,12 @@ func (m *Module) Name() string { return "维修状态查询" }
 func (m *Module) Models() []any { return nil }
 
 // RegisterRoutes 实现 module.Module 接口。
+// 看板与追踪对全部登录角色开放; 其中维修数据的范围(维修人员仅本人)在 service 层统一收敛。
 func (m *Module) RegisterRoutes(api *gin.RouterGroup) {
 	group := api.Group("/status")
 	{
-		group.GET("/overview", m.handler.Overview)
-		group.GET("/lamps", m.handler.Lamps)
-		group.GET("/track", m.handler.Track)
+		group.GET("/overview", auth.RequirePermission(auth.PermStatusRead), m.handler.Overview)
+		group.GET("/lamps", auth.RequirePermission(auth.PermStatusRead), m.handler.Lamps)
+		group.GET("/track", auth.RequirePermission(auth.PermStatusRead), m.handler.Track)
 	}
 }

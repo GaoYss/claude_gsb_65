@@ -13,11 +13,20 @@ import (
 // CodeOK 表示业务处理成功。
 const CodeOK = "OK"
 
+// ContextDeniedPermission 是拒绝(403)时写入 gin.Context 的缺失权限项键名,
+// 供审计中间件在请求结束后统一读取, 避免横切逻辑与业务包形成循环依赖。
+const ContextDeniedPermission = "denied_permission"
+
+// ContextDeniedReason 是拒绝(403)时写入的补充原因键名。
+const ContextDeniedReason = "denied_reason"
+
 // Envelope 是所有接口统一的响应结构。
 type Envelope struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 	Data    any    `json:"data,omitempty"`
+	// MissingPermission 仅 403 时出现, 指明缺少的授权点, 与审计记录一致。
+	MissingPermission string `json:"missing_permission,omitempty"`
 }
 
 // PageData 是列表接口统一的分页结构。
@@ -68,7 +77,15 @@ func Fail(c *gin.Context, err error) {
 		if appErr.Status >= http.StatusInternalServerError {
 			_ = c.Error(err)
 		}
-		c.JSON(appErr.Status, Envelope{Code: appErr.Code, Message: appErr.Message})
+		if appErr.Status == http.StatusForbidden {
+			// 透传给审计中间件: 被拒操作缺少了哪一项授权。
+			c.Set(ContextDeniedPermission, appErr.MissingPermission)
+		}
+		c.JSON(appErr.Status, Envelope{
+			Code:              appErr.Code,
+			Message:           appErr.Message,
+			MissingPermission: appErr.MissingPermission,
+		})
 		return
 	}
 

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"streetlight/internal/apperr"
+	"streetlight/internal/modules/auth"
 	"streetlight/internal/modules/lamp"
 	"streetlight/pkg/pagination"
 )
@@ -212,6 +213,48 @@ func (s *Service) Close(ctx context.Context, id uint, req CloseRequest) (*Fault,
 		slog.Warn("同步路灯运行状态失败", "lamp_id", entity.LampID, "fault_no", entity.FaultNo, "error", err)
 	}
 	return entity, nil
+}
+
+// Transition 例外流转: 仅持有 fault:bypass 授权的管理岗可用,
+// 跳过常规状态机约束, 强制把故障置为目标状态(推进或回退)。
+// 关闭时补写关闭时间, 由关闭改为其它状态时清空关闭信息, 并同步路灯运行状态。
+func (s *Service) Transition(ctx context.Context, id uint, req TransitionRequest) (*Fault, string, string, error) {
+	principal := auth.PrincipalFromContext(ctx)
+	if principal == nil || !principal.Can(auth.PermFaultBypass) {
+		return nil, "", "", auth.Forbidden(auth.PermFaultBypass, "")
+	}
+
+	target := strings.TrimSpace(req.TargetStatus)
+	if !IsValidStatus(target) {
+		return nil, "", "", apperr.BadRequest("非法的故障状态: %s", target)
+	}
+
+	entity, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, "", "", err
+	}
+	previous := entity.Status
+	if previous == target {
+		return nil, "", "", apperr.Conflict("故障 %s 当前已是 %s, 无需例外流转", entity.FaultNo, StatusLabel(target))
+	}
+
+	now := time.Now()
+	entity.Status = target
+	if target == StatusClosed {
+		entity.ClosedAt = &now
+		entity.CloseRemark = strings.TrimSpace(req.Remark)
+	} else {
+		entity.ClosedAt = nil
+		entity.CloseRemark = ""
+	}
+
+	if err := s.repo.Update(ctx, entity); err != nil {
+		return nil, "", "", err
+	}
+	if err := s.syncLampStatus(ctx, entity.LampID); err != nil {
+		slog.Warn("同步路灯运行状态失败", "lamp_id", entity.LampID, "fault_no", entity.FaultNo, "error", err)
+	}
+	return entity, previous, target, nil
 }
 
 // Delete 删除故障, 仅允许删除已关闭且没有维修记录的故障。

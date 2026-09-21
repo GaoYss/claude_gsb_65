@@ -115,23 +115,25 @@ func (s *Service) Overview(ctx context.Context) (*Overview, error) {
 		return nil, err
 	}
 
-	repairTotal, err := s.repairs.Count(ctx)
+	repairFilter := repair.ScopeFilter(ctx)
+
+	repairTotal, err := s.repairs.CountS(ctx, repairFilter)
 	if err != nil {
 		return nil, err
 	}
-	repairByStatus, err := s.repairs.CountByColumn(ctx, "status")
+	repairByStatus, err := s.repairs.CountByColumnS(ctx, repairFilter, "status")
 	if err != nil {
 		return nil, err
 	}
-	todayFinished, err := s.repairs.CountFinishedBetween(ctx, todayStart, tomorrow)
+	todayFinished, err := s.repairs.CountFinishedBetweenS(ctx, repairFilter, todayStart, tomorrow)
 	if err != nil {
 		return nil, err
 	}
-	averageDuration, err := s.repairs.AverageDurationHours(ctx)
+	averageDuration, err := s.repairs.AverageDurationHoursS(ctx, repairFilter)
 	if err != nil {
 		return nil, err
 	}
-	totalCost, err := s.repairs.SumCost(ctx)
+	totalCost, err := s.repairs.SumCostS(ctx, repairFilter)
 	if err != nil {
 		return nil, err
 	}
@@ -312,7 +314,7 @@ func (s *Service) Track(ctx context.Context, query TrackQuery) (*TrackResult, er
 		}
 		if len(history) > 0 {
 			latest := history[0]
-			repairs, err := s.repairs.ListByFault(ctx, latest.ID)
+			repairs, err := s.listRepairsScoped(ctx, latest.ID)
 			if err != nil {
 				return nil, err
 			}
@@ -327,13 +329,33 @@ func (s *Service) Track(ctx context.Context, query TrackQuery) (*TrackResult, er
 	}
 }
 
+// listRepairsScoped 查询某故障的维修记录, 并按当前操作者数据范围过滤
+// (维修人员仅见本人记录), 与维修列表/详情/导出/看板结论一致。
+func (s *Service) listRepairsScoped(ctx context.Context, faultID uint) ([]repair.Repair, error) {
+	items, err := s.repairs.ListByFault(ctx, faultID)
+	if err != nil {
+		return nil, err
+	}
+	filter := repair.ScopeFilter(ctx)
+	if filter.Repairman == "" {
+		return items, nil
+	}
+	filtered := make([]repair.Repair, 0, len(items))
+	for _, item := range items {
+		if item.Repairman == filter.Repairman {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered, nil
+}
+
 // buildFaultTrack 组装单条故障的完整链路。
 func (s *Service) buildFaultTrack(ctx context.Context, entity *fault.Fault) (*TrackResult, error) {
 	device, err := s.lamps.GetByID(ctx, entity.LampID)
 	if err != nil {
 		return nil, err
 	}
-	repairs, err := s.repairs.ListByFault(ctx, entity.ID)
+	repairs, err := s.listRepairsScoped(ctx, entity.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -392,12 +414,16 @@ func (s *Service) currentFaults(ctx context.Context, lampIDs []uint) (map[uint]f
 }
 
 // latestRepairs 批量取出每盏路灯最近一次的维修记录。
+// 维修人员仅统计本人负责的记录, 与列表/导出/看板其它部分使用同一范围函数。
 func (s *Service) latestRepairs(ctx context.Context, lampIDs []uint) (map[uint]repair.Repair, error) {
+	filter := repair.ScopeFilter(ctx)
+	statement := s.db.WithContext(ctx).Model(&repair.Repair{}).
+		Where("lamp_id IN ?", lampIDs)
+	if filter.Repairman != "" {
+		statement = statement.Where("repairman = ?", filter.Repairman)
+	}
 	entities := make([]repair.Repair, 0)
-	err := s.db.WithContext(ctx).Model(&repair.Repair{}).
-		Where("lamp_id IN ?", lampIDs).
-		Order("started_at DESC, id DESC").
-		Find(&entities).Error
+	err := statement.Order("started_at DESC, id DESC").Find(&entities).Error
 	if err != nil {
 		return nil, err
 	}

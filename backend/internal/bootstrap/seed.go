@@ -7,12 +7,16 @@ import (
 
 	"gorm.io/gorm"
 
+	"streetlight/internal/modules/auth"
 	"streetlight/internal/modules/fault"
 	"streetlight/internal/modules/lamp"
 	"streetlight/internal/modules/repair"
 )
 
 const hour = time.Hour
+
+// SeedPassword 是全部演示账号的统一初始口令(仅用于演示环境)。
+const SeedPassword = "streetlight123"
 
 // seedRepairCase 描述一条演示维修记录, 时间字段为距当前时刻的时长。
 type seedRepairCase struct {
@@ -42,6 +46,11 @@ type seedFaultCase struct {
 
 // seed 在数据库为空时写入演示数据, 便于启动后立即体验完整业务流程。
 func seed(db *gorm.DB) error {
+	// 账号始终保证存在(独立于业务演示数据), 避免已有台账数据的库无法登录。
+	if err := seedUsers(db); err != nil {
+		return err
+	}
+
 	var count int64
 	if err := db.Model(&lamp.Lamp{}).Count(&count).Error; err != nil {
 		return err
@@ -151,6 +160,42 @@ func seed(db *gorm.DB) error {
 		"故障", len(faults),
 		"维修记录", len(repairs),
 	)
+	return nil
+}
+
+// seedUsers 保证三类角色的演示账号存在, 已存在的账号不覆盖(避免改写管理员改过的口令/角色)。
+// 维修人员的姓名与演示维修记录中的负责人保持一致, 登录后即可看到"本人负责"的记录。
+func seedUsers(db *gorm.DB) error {
+	accounts := []struct {
+		username, displayName, role, team string
+	}{
+		{"registrar01", "王建国", auth.RoleRegistrar, "登记窗口"},
+		{"repair01", "刘志强", auth.RoleRepairman, "市政照明一班"},
+		{"repair02", "陈鹏", auth.RoleRepairman, "市政照明二班"},
+		{"manager01", "调度主管", auth.RoleManager, "调度中心"},
+	}
+
+	created := 0
+	for _, item := range accounts {
+		var existing int64
+		if err := db.Model(&auth.User{}).Where("username = ?", item.username).Count(&existing).Error; err != nil {
+			return fmt.Errorf("检查演示账号失败: %w", err)
+		}
+		if existing > 0 {
+			continue
+		}
+		user, err := auth.NewUser(item.username, SeedPassword, item.displayName, item.role, item.team)
+		if err != nil {
+			return err
+		}
+		if err := db.Create(user).Error; err != nil {
+			return fmt.Errorf("写入演示账号 %s 失败: %w", item.username, err)
+		}
+		created++
+	}
+	if created > 0 {
+		slog.Info("演示账号初始化完成", "新增数量", created, "初始口令", SeedPassword)
+	}
 	return nil
 }
 

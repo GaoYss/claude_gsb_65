@@ -37,6 +37,13 @@ type FinishRequest struct {
 	Remark     string   `json:"remark" binding:"omitempty,max=255"`
 }
 
+// AssignRequest 改派请求, 仅管理岗可用: 调整维修记录的负责人和/或班组。
+type AssignRequest struct {
+	Repairman  string `json:"repairman" binding:"required,max=64"`
+	RepairTeam string `json:"repair_team" binding:"omitempty,max=64"`
+	Reason     string `json:"reason" binding:"omitempty,max=255"` // 改派原因, 记入审计明细
+}
+
 // ListQuery 维修记录查询条件。
 type ListQuery struct {
 	pagination.Params

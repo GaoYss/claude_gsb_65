@@ -2,7 +2,7 @@
   <div class="page">
     <PageHeader title="路灯台账" description="维护每盏路灯的档案信息与运行状态, 台账是故障登记与维修的基础数据">
       <el-button :icon="Refresh" @click="load">刷新</el-button>
-      <el-button type="primary" :icon="Plus" @click="openCreate">新增路灯</el-button>
+      <el-button v-if="can('lamp:manage')" type="primary" :icon="Plus" @click="openCreate">新增路灯</el-button>
     </PageHeader>
 
     <el-card shadow="never">
@@ -43,9 +43,10 @@
         </el-table-column>
         <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
-            <el-button link type="warning" @click="goRegisterFault(row)">登记故障</el-button>
-            <el-button link type="danger" @click="handleDelete(row)">删除</el-button>
+            <el-button v-if="can('lamp:manage')" link type="primary" @click="openEdit(row)">编辑</el-button>
+            <el-button v-if="can('fault:create')" link type="warning" @click="goRegisterFault(row)">登记故障</el-button>
+            <el-button v-if="can('lamp:manage')" link type="danger" @click="handleDelete(row)">删除</el-button>
+            <span v-if="!can('lamp:manage') && !can('fault:create')" class="text-muted">仅可查看</span>
           </template>
         </el-table-column>
       </el-table>
@@ -84,9 +85,11 @@ import { useDictStore } from '@/stores/dict'
 import { RUN_STATUS } from '@/constants/dict'
 import { formatDate } from '@/utils/format'
 import { useListPage } from '@/composables/useListPage'
+import { usePermission } from '@/composables/usePermission'
 
 const router = useRouter()
 const dictStore = useDictStore()
+const { can } = usePermission()
 
 const { loading, rows, total, query, load, search, reset, changePage, changePageSize } = useListPage(
   lampApi.list,

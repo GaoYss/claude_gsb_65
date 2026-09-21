@@ -42,9 +42,10 @@
 │   │   ├── middleware/                   # requestid / logger / recovery / cors
 │   │   ├── module/module.go              # Module 接口: Name / Models / RegisterRoutes
 │   │   ├── modules/                      # ★ 业务模块, 每个模块一套分层
+│   │   │   ├── auth/                     #   认证授权(用户/会话/权限策略/审计)
 │   │   │   ├── lamp/                     #   路灯台账
 │   │   │   ├── fault/                    #   故障登记
-│   │   │   ├── repair/                   #   维修记录录入
+│   │   │   ├── repair/                   #   维修记录
 │   │   │   └── status/                   #   维修状态查询(只读, 不建表)
 │   │   ├── response/                     # 统一响应信封 Envelope / PageData / OK / Fail
 │   ├── pkg/pagination/                   # 分页与排序参数(排序字段白名单)
@@ -54,21 +55,26 @@
 │
 ├── frontend/                             # Vue 3 前端
 │   ├── src/
-│   │   ├── api/                          # 按模块拆分的接口封装 + axios 实例
+│   │   ├── api/                          # 按模块拆分的接口封装 + axios 实例(令牌注入/401跳登录/403提示)
 │   │   ├── components/
 │   │   │   ├── common/                   # PageHeader / StatusTag / DataPagination / StatCard / BarList
-│   │   │   └── layout/AppLayout.vue      # 侧边导航 + 内容区骨架
+│   │   │   └── layout/AppLayout.vue      # 侧边导航(按权限过滤) + 用户/角色 + 内容区骨架
 │   │   ├── composables/useListPage.js    # 列表页公共逻辑(查询/分页/加载)
+│   │   ├── composables/usePermission.js  # 统一权限判断 can()/ownsRepair()
 │   │   ├── constants/dict.js             # 与后端一致的枚举字典与颜色
-│   │   ├── router/index.js               # 路由表, 每个功能一个路由
+│   │   ├── router/index.js               # 路由表 + 登录守卫 + 路由级权限点
 │   │   ├── stores/dict.js                # Pinia 字典缓存
+│   │   ├── stores/auth.js                # 登录令牌/当前用户/权限点
 │   │   ├── utils/format.js               # 时间/耗时/金额格式化
+│   │   ├── utils/download.js             # 带令牌的 CSV 导出下载
 │   │   └── views/                        # ★ 按功能拆分的页面
+│   │       ├── login/LoginView.vue       # 登录页
 │   │       ├── dashboard/DashboardView.vue
 │   │       ├── lamp/LampListView.vue + components/LampFormDialog.vue
 │   │       ├── fault/FaultListView.vue + components/{FaultFormDialog,FaultDetailDrawer}.vue
 │   │       ├── repair/RepairListView.vue + components/{RepairFormDialog,FinishRepairDialog}.vue
-│   │       └── status/{StatusLampView,StatusTrackView}.vue
+│   │       ├── status/{StatusLampView,StatusTrackView}.vue
+│   │       └── admin/{UserListView,AuditLogView}.vue  # 用户与授权 / 审计日志(管理岗)
 │   ├── nginx.conf                        # 生产: SPA 回退 + /api 反向代理
 │   ├── Dockerfile
 │   └── vite.config.js
@@ -122,6 +128,8 @@ status.New(db, lampRepo, faultRepo, repairRepo)-> 维修状态查询(只读聚�
 | --- | --- | --- |
 | `OK` | 200 / 201 | 成功 |
 | `INVALID_ARGUMENT` | 400 | 参数或业务校验失败 |
+| `UNAUTHORIZED` | 401 | 未登录或登录状态失效 |
+| `FORBIDDEN` | 403 | 越权, 响应带 `missing_permission` 指明缺少的授权项 |
 | `NOT_FOUND` | 404 | 资源不存在 |
 | `CONFLICT` | 409 | 状态冲突(如重复开工、已关闭不可再操作) |
 | `INTERNAL_ERROR` | 500 | 服务端内部错误 |
@@ -242,9 +250,18 @@ go test ./...
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
+| POST | `/auth/login` | 登录, 返回会话令牌与当前用户权限点 |
+| POST | `/auth/logout` | 注销当前令牌 |
+| GET | `/auth/me` | 当前登录用户档案 + 权限点(前端菜单/按钮据此渲染) |
+| GET | `/auth/users` | 用户分页查询(需 `user:manage`) |
+| POST | `/auth/users` | 新增用户(需 `user:manage`) |
+| PUT | `/auth/users/:id` | 改角色/班组/重置密码/启停(需 `user:manage`) |
+| GET | `/auth/audit-logs` | 审计日志查询(需 `audit:read`) |
 | GET | `/api/v1` | 已注册模块列表 |
 | GET | `/healthz` | 存活探针 |
 | GET | `/readyz` | 就绪探针(含数据库 ping) |
+
+> 除 `/auth/login` 外所有接口都要携带 `Authorization: Bearer <token>`。
 
 ### 路灯台账
 
@@ -265,24 +282,28 @@ go test ./...
 | GET | `/faults` | 分页查询(状态/等级/类型/道路/时间区间) |
 | POST | `/faults` | 登记故障(同一路灯存在未闭环故障时返回 409) |
 | GET | `/faults/meta` | 字典: 类型/等级/来源/状态 |
+| GET | `/faults/export` | 导出故障 CSV(需 `export:fault`) |
 | GET | `/faults/:id` | 详情 |
 | PUT | `/faults/:id` | 修改 |
-| DELETE | `/faults/:id` | 删除(仅已关闭且无维修记录) |
-| POST | `/faults/:id/close` | 关闭故障 |
+| DELETE | `/faults/:id` | 删除(仅已关闭且无维修记录, 需 `fault:delete`) |
+| POST | `/faults/:id/close` | 关闭故障(需 `fault:close`) |
+| POST | `/faults/:id/transition` | 例外流转, 跳过状态机强制推进/回退(需 `fault:bypass`, 管理岗) |
 
 ### 维修记录录入
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/repairs` | 分页查询(状态/结果/维修人/班组) |
-| POST | `/repairs` | 录入维修记录(即开工; 同一故障已有进行中记录时返回 409) |
+| GET | `/repairs` | 分页查询(状态/结果/维修人/班组); 维修人员仅返回本人负责记录 |
+| POST | `/repairs` | 录入维修记录(即开工; 同一故障已有进行中记录时 409; 维修人员只能为本人开工) |
 | GET | `/repairs/meta` | 字典: 状态/结果 |
-| GET | `/repairs/statistics` | 维修统计(次数/平均耗时/费用) |
-| GET | `/repairs/fault/:faultId` | 某故障下的全部维修记录 |
-| GET | `/repairs/:id` | 详情 |
-| PUT | `/repairs/:id` | 修改 |
-| POST | `/repairs/:id/finish` | 完工(写入完工时间与维修结果) |
-| DELETE | `/repairs/:id` | 删除(会重算故障的维修次数) |
+| GET | `/repairs/statistics` | 维修统计(维修人员仅统计本人范围) |
+| GET | `/repairs/export` | 导出维修 CSV(维修人员仅本人范围) |
+| GET | `/repairs/fault/:faultId` | 某故障下的全部维修记录(维修人员仅本人记录) |
+| GET | `/repairs/:id` | 详情(维修人员仅限本人记录) |
+| PUT | `/repairs/:id` | 修改(维修人员仅限本人进行中记录) |
+| POST | `/repairs/:id/finish` | 完工(维修人员仅限本人记录) |
+| POST | `/repairs/:id/assign` | 改派负责人/班组(需 `repair:assign`, 管理岗) |
+| DELETE | `/repairs/:id` | 删除(需 `repair:delete`, 管理岗, 会重算故障维修次数) |
 
 ### 维修状态查询
 
@@ -307,9 +328,59 @@ go test ./...
 
 ---
 
-## 九、演示数据
+## 九、角色、权限与审计
 
-`APP_SEED=true`(默认)且库中还没有台账数据时, 首次启动会写入一组演示数据, 打开页面即可看到效果:
+系统按"角色 → 细粒度权限点(`资源:动作`) → 行级数据范围"三层授权, 权限策略只有一份,
+定义在后端 `internal/modules/auth/authz.go`; 页面、接口、导出、看板四处都引用同一份结论。
+
+### 9.1 三类角色的操作范围
+
+| 角色 | 能做 | 不能做 |
+| --- | --- | --- |
+| **登记人员** `registrar` | 故障登记/修改、故障与维修**只读查询**、故障导出、看板 | 推进/完工/删除维修记录、关闭/删除/例外流转故障、台账维护、改派、用户与审计管理 |
+| **维修人员** `repairman` | 推进**本人负责**的维修记录(开工/编辑/完工)、本人范围的查询/导出/看板 | 登记故障、操作**他人**记录、改派、例外流转、台账维护、用户与审计管理 |
+| **管理岗** `manager` | 全部业务操作, 外加**改派**、**例外流转**、台账维护、用户与角色管理、查看审计 | —— |
+
+- **行级归属**: 维修人员的可见/可操作范围是"维修记录负责人(repairman)= 本人姓名"。
+  列表、详情、按故障查维修、统计、CSV 导出、运行看板、进度追踪**全部**经同一个函数
+  `repair.ApplyOwnScope / ScopeFilter` 收敛, 保证四处数字一致; 绕过页面直接调接口同样被拦。
+- **开工约束**: 维修人员只能为本人开工(不能把记录记在别人名下); 管理岗可代任意人登记。
+- **改派** (`POST /repairs/:id/assign`, 需 `repair:assign`): 仅管理岗, 调整负责人/班组, 改派后新负责人立即获得该记录权限、原负责人立即失去。
+- **例外流转** (`POST /faults/:id/transition`, 需 `fault:bypass`): 仅管理岗, 跳过常规状态机强制推进/回退, 必须填写原因。
+
+### 9.2 越权拒绝
+
+- 接口无权限或越权访问他人数据时返回 **403**, 响应体 `missing_permission` 明确指出**缺少哪一项授权**,
+  例如 `无权执行该操作: 缺少授权 repair:finish(完工本人负责的维修记录), 仅限本人负责的维修记录`。
+- 前端按钮/菜单依据 `/auth/me` 下发的权限点隐藏, 但**最终裁决一律在后端**, 前端隐藏仅为体验。
+
+### 9.3 审计日志(只增不改)
+
+- 每次**写操作**(成功或被业务规则拒绝)与每次 **403 越权拒绝**(含读接口越权、未登录写尝试)都写入 `sys_audit_log`。
+- 被拒记录带 `missing_permission`; 改派/例外流转/用户角色变更带变更前后明细。
+- 审计表在数据访问层**只暴露 Create/List, 没有 Update/Delete, 也没有对应 HTTP 路由**, 物理上无法经应用改写或删除。
+- 操作人用户名/角色在落库时**冗余快照**, 用户事后被停用或调整角色, 历史记录仍保持当时身份, **不会被隐藏或改写**。
+- 角色变更、停用、重置密码会**立即注销该用户全部会话**, 旧令牌即刻失效。
+
+### 9.4 演示账号
+
+初始口令统一为 `streetlight123`(仅演示环境, 生产请通过用户管理修改):
+
+| 用户名 | 姓名 | 角色 | 说明 |
+| --- | --- | --- | --- |
+| `registrar01` | 王建国 | 登记人员 | 故障登记与查询 |
+| `repair01` | 刘志强 | 维修人员 | 姓名与演示维修记录负责人一致, 登录即见"我的维修" |
+| `repair02` | 陈鹏 | 维修人员 | 用于演示跨人越权被拒、管理岗改派 |
+| `manager01` | 调度主管 | 管理岗 | 全部权限 |
+
+---
+
+## 十、演示数据
+
+`APP_SEED=true`(默认)时启动会:
+
+1. **始终**保证上表的四个演示账号存在(已存在则不覆盖, 独立于业务数据);
+2. 当库中还没有台账数据时, 写入一组演示业务数据:
 
 - 6 条道路, 每条 5 盏路灯, 共 **30 盏**, 覆盖 `正常 / 故障 / 维修中 / 停用` 四种运行状态;
 - **14 条故障**, 覆盖待处理 / 维修中 / 已修复 / 已关闭四种状态, 其中包含 2 条已逾期;

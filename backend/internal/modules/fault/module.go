@@ -3,6 +3,8 @@ package fault
 import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+
+	"streetlight/internal/modules/auth"
 )
 
 // Module 故障登记模块, 负责故障上报受理与状态流转。
@@ -36,15 +38,18 @@ func (m *Module) Name() string { return "故障登记" }
 func (m *Module) Models() []any { return []any{&Fault{}} }
 
 // RegisterRoutes 实现 module.Module 接口。
+// 登记人员: 查询 + 登记 + 修改; 管理岗额外拥有关闭/删除/例外流转。
 func (m *Module) RegisterRoutes(api *gin.RouterGroup) {
 	group := api.Group("/faults")
 	{
-		group.GET("", m.handler.List)
-		group.POST("", m.handler.Create)
-		group.GET("/meta", m.handler.Metadata)
-		group.GET("/:id", m.handler.Get)
-		group.PUT("/:id", m.handler.Update)
-		group.DELETE("/:id", m.handler.Delete)
-		group.POST("/:id/close", m.handler.Close)
+		group.GET("", auth.RequirePermission(auth.PermFaultRead), m.handler.List)
+		group.POST("", auth.RequirePermission(auth.PermFaultCreate), m.handler.Create)
+		group.GET("/meta", auth.RequirePermission(auth.PermFaultRead), m.handler.Metadata)
+		group.GET("/export", auth.RequirePermission(auth.PermExportFault), m.handler.Export)
+		group.GET("/:id", auth.RequirePermission(auth.PermFaultRead), m.handler.Get)
+		group.PUT("/:id", auth.RequirePermission(auth.PermFaultUpdate), m.handler.Update)
+		group.DELETE("/:id", auth.RequirePermission(auth.PermFaultDelete), m.handler.Delete)
+		group.POST("/:id/close", auth.RequirePermission(auth.PermFaultClose), m.handler.Close)
+		group.POST("/:id/transition", auth.RequirePermission(auth.PermFaultBypass), m.handler.Transition)
 	}
 }

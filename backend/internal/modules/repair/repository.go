@@ -195,6 +195,22 @@ func (r *Repository) CountByFault(ctx context.Context, faultID uint) (int64, err
 	return count, nil
 }
 
+// ListAll 按条件查询全部维修记录(不分页), 供导出使用, 排序与列表一致。
+func (r *Repository) ListAll(ctx context.Context, filter Filter, orderClause string) ([]Repair, error) {
+	entities := make([]Repair, 0)
+	if orderClause == "" {
+		orderClause = "started_at DESC, id DESC"
+	}
+	if err := applyFilter(r.session(ctx).Model(&Repair{}), filter).
+		Order(orderClause).Find(&entities).Error; err != nil {
+		return nil, fmt.Errorf("导出维修记录失败: %w", err)
+	}
+	for index := range entities {
+		entities[index].FillDuration()
+	}
+	return entities, nil
+}
+
 // CountByColumn 按列分组统计。
 func (r *Repository) CountByColumn(ctx context.Context, column string) (map[string]int64, error) {
 	type row struct {
@@ -203,6 +219,27 @@ func (r *Repository) CountByColumn(ctx context.Context, column string) (map[stri
 	}
 	rows := make([]row, 0)
 	err := r.session(ctx).Model(&Repair{}).
+		Select(column + " AS label, COUNT(*) AS total").
+		Group(column).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("分组统计 %s 失败: %w", column, err)
+	}
+	result := make(map[string]int64, len(rows))
+	for _, item := range rows {
+		result[item.Label] = item.Total
+	}
+	return result, nil
+}
+
+// CountByColumnS 按过滤条件 + 列分组统计, 供按数据范围聚合(看板)使用。
+func (r *Repository) CountByColumnS(ctx context.Context, filter Filter, column string) (map[string]int64, error) {
+	type row struct {
+		Label string
+		Total int64
+	}
+	rows := make([]row, 0)
+	err := r.scoped(ctx, filter).
 		Select(column + " AS label, COUNT(*) AS total").
 		Group(column).
 		Scan(&rows).Error
@@ -235,6 +272,71 @@ func (r *Repository) CountFinishedBetween(ctx context.Context, from, to time.Tim
 		return 0, fmt.Errorf("统计区间完工数量失败: %w", err)
 	}
 	return total, nil
+}
+
+// scoped 在给定过滤条件上构造语句, 供按数据范围聚合使用。
+func (r *Repository) scoped(ctx context.Context, filter Filter) *gorm.DB {
+	return applyFilter(r.session(ctx).Model(&Repair{}), filter)
+}
+
+// CountS 按过滤条件统计维修记录总数。
+func (r *Repository) CountS(ctx context.Context, filter Filter) (int64, error) {
+	var total int64
+	if err := r.scoped(ctx, filter).Count(&total).Error; err != nil {
+		return 0, fmt.Errorf("统计维修记录总数失败: %w", err)
+	}
+	return total, nil
+}
+
+// CountFinishedBetweenS 按过滤条件统计区间内完工数量。
+func (r *Repository) CountFinishedBetweenS(ctx context.Context, filter Filter, from, to time.Time) (int64, error) {
+	var total int64
+	err := r.scoped(ctx, filter).
+		Where("status = ? AND finished_at >= ? AND finished_at < ?", StatusFinished, from, to).
+		Count(&total).Error
+	if err != nil {
+		return 0, fmt.Errorf("统计区间完工数量失败: %w", err)
+	}
+	return total, nil
+}
+
+// SumCostS 按过滤条件汇总维修费用。
+func (r *Repository) SumCostS(ctx context.Context, filter Filter) (float64, error) {
+	var total float64
+	if err := r.scoped(ctx, filter).Select("COALESCE(SUM(cost), 0)").Scan(&total).Error; err != nil {
+		return 0, fmt.Errorf("汇总维修费用失败: %w", err)
+	}
+	return total, nil
+}
+
+// AverageDurationHoursS 按过滤条件统计已完成维修的平均耗时(小时), 应用层计算保证多数据库一致。
+func (r *Repository) AverageDurationHoursS(ctx context.Context, filter Filter) (float64, error) {
+	type row struct {
+		StartedAt  time.Time
+		FinishedAt time.Time
+	}
+	rows := make([]row, 0)
+	err := r.scoped(ctx, filter).
+		Select("started_at, finished_at").
+		Where("finished_at IS NOT NULL").
+		Scan(&rows).Error
+	if err != nil {
+		return 0, fmt.Errorf("统计平均维修耗时失败: %w", err)
+	}
+
+	var total time.Duration
+	count := 0
+	for _, item := range rows {
+		if item.FinishedAt.Before(item.StartedAt) {
+			continue
+		}
+		total += item.FinishedAt.Sub(item.StartedAt)
+		count++
+	}
+	if count == 0 {
+		return 0, nil
+	}
+	return total.Hours() / float64(count), nil
 }
 
 // SumCost 汇总维修费用。
@@ -282,7 +384,7 @@ func (r *Repository) AverageDurationHours(ctx context.Context) (float64, error) 
 func (r *Repository) DistinctValues(ctx context.Context, column string) ([]string, error) {
 	values := make([]string, 0)
 	err := r.session(ctx).Model(&Repair{}).
-		Where(column + " <> ''").
+		Where(column+" <> ''").
 		Distinct().
 		Order(column).
 		Pluck(column, &values).Error

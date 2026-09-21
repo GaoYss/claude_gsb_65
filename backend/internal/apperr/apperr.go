@@ -11,6 +11,8 @@ const (
 	CodeInvalidArgument = "INVALID_ARGUMENT"
 	CodeNotFound        = "NOT_FOUND"
 	CodeConflict        = "CONFLICT"
+	CodeUnauthorized    = "UNAUTHORIZED"
+	CodeForbidden       = "FORBIDDEN"
 	CodeInternalError   = "INTERNAL_ERROR"
 )
 
@@ -19,7 +21,9 @@ type Error struct {
 	Status  int
 	Code    string
 	Message string
-	cause   error
+	// MissingPermission 仅用于 403: 指明被拒绝操作缺少的授权项, 供前端提示与审计。
+	MissingPermission string
+	cause             error
 }
 
 func (e *Error) Error() string {
@@ -57,6 +61,21 @@ func NotFound(format string, args ...any) *Error {
 // Conflict 业务状态冲突(409)。
 func Conflict(format string, args ...any) *Error {
 	return New(http.StatusConflict, CodeConflict, fmt.Sprintf(format, args...))
+}
+
+// Unauthorized 未认证或凭证无效(401)。
+func Unauthorized(format string, args ...any) *Error {
+	return New(http.StatusUnauthorized, CodeUnauthorized, fmt.Sprintf(format, args...))
+}
+
+// Forbidden 已认证但缺少授权(403), permission 为缺失的权限点。
+func Forbidden(permission, message string) *Error {
+	return &Error{
+		Status:            http.StatusForbidden,
+		Code:              CodeForbidden,
+		Message:           message,
+		MissingPermission: permission,
+	}
 }
 
 // Internal 服务端内部错误(500)。

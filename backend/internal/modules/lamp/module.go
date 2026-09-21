@@ -3,6 +3,8 @@ package lamp
 import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+
+	"streetlight/internal/modules/auth"
 )
 
 // Module 路灯台账模块, 负责档案维护与运行状态。
@@ -36,15 +38,16 @@ func (m *Module) Name() string { return "路灯台账" }
 func (m *Module) Models() []any { return []any{&Lamp{}} }
 
 // RegisterRoutes 实现 module.Module 接口。
+// 台账只读对全部登录角色开放, 维护(增改删)仅管理岗。
 func (m *Module) RegisterRoutes(api *gin.RouterGroup) {
 	group := api.Group("/lamps")
 	{
-		group.GET("", m.handler.List)
-		group.POST("", m.handler.Create)
-		group.GET("/options", m.handler.Options)
-		group.GET("/statistics", m.handler.Statistics)
-		group.GET("/:id", m.handler.Get)
-		group.PUT("/:id", m.handler.Update)
-		group.DELETE("/:id", m.handler.Delete)
+		group.GET("", auth.RequirePermission(auth.PermLampRead), m.handler.List)
+		group.POST("", auth.RequirePermission(auth.PermLampManage), m.handler.Create)
+		group.GET("/options", auth.RequirePermission(auth.PermLampRead), m.handler.Options)
+		group.GET("/statistics", auth.RequirePermission(auth.PermLampRead), m.handler.Statistics)
+		group.GET("/:id", auth.RequirePermission(auth.PermLampRead), m.handler.Get)
+		group.PUT("/:id", auth.RequirePermission(auth.PermLampManage), m.handler.Update)
+		group.DELETE("/:id", auth.RequirePermission(auth.PermLampManage), m.handler.Delete)
 	}
 }

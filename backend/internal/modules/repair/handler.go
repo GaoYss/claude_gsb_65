@@ -1,9 +1,12 @@
 package repair
 
 import (
+	"strings"
+
 	"github.com/gin-gonic/gin"
 
 	"streetlight/internal/httpx"
+	"streetlight/internal/modules/auth"
 	"streetlight/internal/response"
 )
 
@@ -149,4 +152,45 @@ func (h *Handler) Statistics(c *gin.Context) {
 		return
 	}
 	response.OK(c, statistics)
+}
+
+// Assign 改派维修记录负责人(仅管理岗)。
+func (h *Handler) Assign(c *gin.Context) {
+	id, err := httpx.ParseID(c, "id")
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	var req AssignRequest
+	if err := httpx.BindJSON(c, &req); err != nil {
+		response.Fail(c, err)
+		return
+	}
+	entity, previous, next, err := h.service.Assign(c.Request.Context(), id, req)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	c.Set(auth.ContextAuditNo, entity.RepairNo)
+	c.Set(auth.ContextAuditDetail, "改派负责人: "+previous+" → "+next+
+		" 班组: "+entity.RepairTeam+" 原因: "+strings.TrimSpace(req.Reason))
+	response.OK(c, entity)
+}
+
+// Export 按当前操作者范围导出维修记录 CSV。
+func (h *Handler) Export(c *gin.Context) {
+	var query ListQuery
+	if err := httpx.BindQuery(c, &query); err != nil {
+		response.Fail(c, err)
+		return
+	}
+	// 导出范围与列表一致, 维修人员只能导出本人记录。
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", "attachment; filename=repairs.csv")
+	if err := h.service.ExportCSV(c.Request.Context(), c.Writer, query); err != nil {
+		if !c.Writer.Written() {
+			response.Fail(c, err)
+		}
+		return
+	}
 }
